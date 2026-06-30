@@ -1,0 +1,27 @@
+# Test profile: isolated in-memory H2, deterministic schema, seed user disabled
+# (tests create their own fixtures). Upstream base-url is overridden per-test to
+# point at MockWebServer so no real network calls are made.
+spring:
+  datasource:
+    url: jdbc:h2:mem:middleware-test;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+
+middleware:
+  security:
+    seed-user:
+      enabled: false
+  jwt:
+    secret: test-secret-key-that-is-sufficiently-long-for-hs256-signing-0123456789
+    expiration-minutes: 60
+  cache:
+    spec: maximumSize=100,expireAfterWrite=2s
+
+logging:
+  level:
+    com.abysalto.middleware: DEBUG

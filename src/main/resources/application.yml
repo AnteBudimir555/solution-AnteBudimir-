@@ -1,0 +1,58 @@
+spring:
+  application:
+    name: middleware
+  # Default to the dev (H2) profile for one-command local startup.
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+
+server:
+  port: ${SERVER_PORT:8080}
+
+# ---------------------------------------------------------------------------
+# Application-specific configuration (bound to typed @ConfigurationProperties).
+# ---------------------------------------------------------------------------
+middleware:
+  # Upstream product source (currently DummyJSON). The ProductSource abstraction
+  # means swapping/adding sources does not require touching consumers.
+  upstream:
+    dummyjson:
+      base-url: ${DUMMYJSON_BASE_URL:https://dummyjson.com}
+      connect-timeout-ms: ${DUMMYJSON_CONNECT_TIMEOUT_MS:3000}
+      response-timeout-ms: ${DUMMYJSON_RESPONSE_TIMEOUT_MS:5000}
+  # Summary description hard cap (TASK §3.1).
+  summary:
+    description-max-length: 100
+  # JWT signing for locally-issued tokens. Override the secret in any real env.
+  jwt:
+    secret: ${JWT_SECRET:change-me-in-prod-please-use-a-long-random-32B+-secret-key}
+    expiration-minutes: ${JWT_EXPIRATION_MINUTES:60}
+    issuer: abysalto-middleware
+  # Seed user created on startup so the API can be exercised out of the box.
+  security:
+    seed-user:
+      enabled: ${SEED_USER_ENABLED:true}
+      username: ${SEED_USER_USERNAME:demo}
+      password: ${SEED_USER_PASSWORD:demo1234}
+
+# ---------------------------------------------------------------------------
+# Caching: Caffeine-backed Spring Cache for search/filter dedup (TASK §4).
+# ---------------------------------------------------------------------------
+  cache:
+    spec: maximumSize=500,expireAfterWrite=60s
+
+# springdoc / Swagger UI
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: alpha
+    tags-sorter: alpha
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  level:
+    root: INFO
+    com.abysalto.middleware: INFO
+  pattern:
+    # Include the MDC correlation id (set by RequestLoggingFilter) in each line.
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{correlationId:-}] %logger{36} - %msg%n"

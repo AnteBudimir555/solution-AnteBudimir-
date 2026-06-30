@@ -1,0 +1,21 @@
+# Postgres profile: production-like, used by docker-compose. Connection details
+# come from environment variables (see docker-compose.yml / README).
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/middleware}
+    driver-class-name: org.postgresql.Driver
+    username: ${DB_USERNAME:middleware}
+    password: ${DB_PASSWORD:middleware}
+  jpa:
+    hibernate:
+      # validate/update in real deployments; update keeps the demo self-contained.
+      ddl-auto: update
+    properties:
+      hibernate:
+        jdbc:
+          lob:
+            non_contextual_creation: true
+    show-sql: false
+  h2:
+    console:
+      enabled: false
