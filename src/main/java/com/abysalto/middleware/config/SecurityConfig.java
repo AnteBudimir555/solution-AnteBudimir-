@@ -6,6 +6,7 @@ import com.abysalto.middleware.security.JwtService;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -19,8 +20,11 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.web.servlet.HandlerExceptionResolver;
 
 /**
- * Stateless JWT security. Public: auth endpoints, OpenAPI docs and the H2 console. Everything
- * under {@code /api/products/**} (and anything else) requires a valid bearer token.
+ * Stateless JWT security. Public: auth endpoints and the OpenAPI docs. Everything under
+ * {@code /api/products/**} (and anything else) requires a valid bearer token.
+ * <p>
+ * The H2 console (path access + same-origin framing) is opened <em>only</em> under the {@code dev}
+ * profile, where the embedded console is enabled; production-like profiles never expose it.
  * <p>
  * Authentication (401) and access-denied (403) failures occur inside the filter chain, before the
  * MVC layer. Rather than duplicate error rendering, both are delegated to the MVC
@@ -34,15 +38,17 @@ public class SecurityConfig {
             "/api/auth/**",
             "/v3/api-docs/**",
             "/swagger-ui/**",
-            "/swagger-ui.html",
-            "/h2-console/**"
+            "/swagger-ui.html"
     };
+
+    private static final String H2_CONSOLE = "/h2-console/**";
 
     @Bean
     public SecurityFilterChain securityFilterChain(
             HttpSecurity http,
             JwtService jwtService,
             AppUserDetailsService userDetailsService,
+            Environment environment,
             @Qualifier("handlerExceptionResolver") HandlerExceptionResolver resolver) throws Exception {
 
         // Constructed here (not a @Component) so Boot does not also auto-register it in the main
@@ -50,20 +56,30 @@ public class SecurityConfig {
         JwtAuthenticationFilter jwtAuthenticationFilter =
                 new JwtAuthenticationFilter(jwtService, userDetailsService);
 
+        boolean devProfile = environment.matchesProfiles("dev");
+
         http
                 .csrf(AbstractHttpConfigurer::disable)
-                // H2 console renders inside a frame; allow same-origin framing for it.
-                .headers(headers -> headers.frameOptions(HeadersConfigurer.FrameOptionsConfig::sameOrigin))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(PUBLIC_PATHS).permitAll()
-                        .anyRequest().authenticated())
+                .authorizeHttpRequests(auth -> {
+                    auth.requestMatchers(PUBLIC_PATHS).permitAll();
+                    if (devProfile) {
+                        auth.requestMatchers(H2_CONSOLE).permitAll();
+                    }
+                    auth.anyRequest().authenticated();
+                })
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint((request, response, authException) ->
                                 resolver.resolveException(request, response, null, authException))
                         .accessDeniedHandler((request, response, deniedException) ->
                                 resolver.resolveException(request, response, null, deniedException)))
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+
+        if (devProfile) {
+            // H2 console renders inside a frame; allow same-origin framing for it (dev only).
+            // Production-like profiles keep the secure default (DENY).
+            http.headers(headers -> headers.frameOptions(HeadersConfigurer.FrameOptionsConfig::sameOrigin));
+        }
 
         return http.build();
     }

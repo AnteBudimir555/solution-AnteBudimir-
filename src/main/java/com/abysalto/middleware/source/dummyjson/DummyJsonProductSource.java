@@ -9,11 +9,13 @@ import com.abysalto.middleware.source.dummyjson.dto.DummyProduct;
 import com.abysalto.middleware.source.dummyjson.dto.DummyProductList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.stereotype.Component;
-import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientResponseException;
-import reactor.core.publisher.Mono;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.function.Supplier;
 
@@ -29,83 +31,95 @@ import java.util.function.Supplier;
  *       in-service (see {@code ProductService}); this source only exposes the primitives.</li>
  * </ul>
  *
- * <p>Calls are executed synchronously ({@code block()}) because the middleware runs on the
- * servlet (Web MVC) stack; reactive types are not exposed beyond this class.
+ * <p>Calls are synchronous: the middleware runs on the servlet (Web MVC) stack and uses the blocking
+ * {@link RestClient}, so no reactive types leak beyond this class.
  */
 @Component
 public class DummyJsonProductSource implements ProductSource {
 
     private static final Logger log = LoggerFactory.getLogger(DummyJsonProductSource.class);
 
-    private final WebClient webClient;
+    private final RestClient restClient;
 
-    public DummyJsonProductSource(WebClient dummyJsonWebClient) {
-        this.webClient = dummyJsonWebClient;
+    public DummyJsonProductSource(RestClient dummyJsonRestClient) {
+        this.restClient = dummyJsonRestClient;
     }
 
     @Override
     public ProductPage list(int skip, int limit) {
         log.debug("Upstream list: skip={}, limit={}", skip, limit);
-        DummyProductList body = fetch("list products", () -> webClient.get()
+        DummyProductList body = fetch("list products", () -> restClient.get()
                 .uri(uri -> uri.path("/products")
                         .queryParam("limit", limit)
                         .queryParam("skip", skip)
                         .build())
                 .retrieve()
-                .onStatus(s -> s.isError(), this::upstreamError)
-                .bodyToMono(DummyProductList.class));
+                .onStatus(HttpStatusCode::isError, (request, response) -> {
+                    throw upstreamError(response);
+                })
+                .body(DummyProductList.class));
         return toPage(body);
     }
 
     @Override
     public Product getById(long id) {
         log.debug("Upstream getById: id={}", id);
-        DummyProduct body = fetch("get product " + id, () -> webClient.get()
+        DummyProduct body = fetch("get product " + id, () -> restClient.get()
                 .uri("/products/{id}", id)
                 .retrieve()
-                .onStatus(s -> s.value() == 404, resp -> Mono.error(new ProductNotFoundException(id)))
-                .onStatus(s -> s.isError(), this::upstreamError)
-                .bodyToMono(DummyProduct.class));
+                .onStatus(status -> status.value() == 404, (request, response) -> {
+                    throw new ProductNotFoundException(id);
+                })
+                .onStatus(HttpStatusCode::isError, (request, response) -> {
+                    throw upstreamError(response);
+                })
+                .body(DummyProduct.class));
         return DummyProductMapper.toDomain(body);
     }
 
     @Override
     public ProductPage findByCategory(String category, int skip, int limit) {
         log.debug("Upstream findByCategory: category={}, skip={}, limit={}", category, skip, limit);
-        DummyProductList body = fetch("filter by category " + category, () -> webClient.get()
+        DummyProductList body = fetch("filter by category " + category, () -> restClient.get()
                 .uri(uri -> uri.path("/products/category/{category}")
                         .queryParam("limit", limit)
                         .queryParam("skip", skip)
                         .build(category))
                 .retrieve()
-                .onStatus(s -> s.isError(), this::upstreamError)
-                .bodyToMono(DummyProductList.class));
+                .onStatus(HttpStatusCode::isError, (request, response) -> {
+                    throw upstreamError(response);
+                })
+                .body(DummyProductList.class));
         return toPage(body);
     }
 
     @Override
     public ProductPage searchByName(String query, int skip, int limit) {
         log.debug("Upstream searchByName: q={}, skip={}, limit={}", query, skip, limit);
-        DummyProductList body = fetch("search products", () -> webClient.get()
+        DummyProductList body = fetch("search products", () -> restClient.get()
                 .uri(uri -> uri.path("/products/search")
                         .queryParam("q", query)
                         .queryParam("limit", limit)
                         .queryParam("skip", skip)
                         .build())
                 .retrieve()
-                .onStatus(s -> s.isError(), this::upstreamError)
-                .bodyToMono(DummyProductList.class));
+                .onStatus(HttpStatusCode::isError, (request, response) -> {
+                    throw upstreamError(response);
+                })
+                .body(DummyProductList.class));
         return toPage(body);
     }
 
     @Override
     public List<String> categories() {
         log.debug("Upstream categories");
-        String[] body = fetch("list categories", () -> webClient.get()
+        String[] body = fetch("list categories", () -> restClient.get()
                 .uri("/products/category-list")
                 .retrieve()
-                .onStatus(s -> s.isError(), this::upstreamError)
-                .bodyToMono(String[].class));
+                .onStatus(HttpStatusCode::isError, (request, response) -> {
+                    throw upstreamError(response);
+                })
+                .body(String[].class));
         return body == null ? List.of() : List.of(body);
     }
 
@@ -118,22 +132,20 @@ public class DummyJsonProductSource implements ProductSource {
     }
 
     /** Maps any error HTTP status into an {@link UpstreamException}. */
-    private Mono<? extends Throwable> upstreamError(org.springframework.web.reactive.function.client.ClientResponse resp) {
-        return resp.createException()
-                .map(ex -> new UpstreamException("DummyJSON returned " + resp.statusCode(), ex));
+    private UpstreamException upstreamError(ClientHttpResponse response) throws IOException {
+        return new UpstreamException("DummyJSON returned " + response.getStatusCode());
     }
 
     /**
-     * Executes a reactive call synchronously and normalizes failures: {@link ProductNotFoundException}
-     * propagates as-is, everything else (timeouts, connection errors, non-2xx) becomes
-     * {@link UpstreamException}.
+     * Executes an upstream call and normalizes failures: {@link ProductNotFoundException} propagates
+     * as-is, everything else (timeouts, connection errors, non-2xx) becomes {@link UpstreamException}.
      */
-    private <T> T fetch(String description, Supplier<Mono<T>> call) {
+    private <T> T fetch(String description, Supplier<T> call) {
         try {
-            return call.get().block();
+            return call.get();
         } catch (ProductNotFoundException | UpstreamException e) {
             throw e;
-        } catch (WebClientResponseException e) {
+        } catch (RestClientResponseException e) {
             log.error("Upstream error during {}: {}", description, e.getStatusCode());
             throw new UpstreamException("Upstream error during " + description + ": " + e.getStatusCode(), e);
         } catch (Exception e) {

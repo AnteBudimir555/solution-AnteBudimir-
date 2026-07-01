@@ -3,6 +3,7 @@ package com.abysalto.middleware.controller;
 import com.abysalto.middleware.dto.PagedResponse;
 import com.abysalto.middleware.dto.ProductDetailDto;
 import com.abysalto.middleware.dto.ProductSummaryDto;
+import com.abysalto.middleware.exception.InvalidRequestException;
 import com.abysalto.middleware.service.ProductService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -59,7 +60,7 @@ public class ProductController {
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
         if (minPrice != null && maxPrice != null && minPrice.compareTo(maxPrice) > 0) {
-            throw new IllegalArgumentException("minPrice must not be greater than maxPrice");
+            throw new InvalidRequestException("minPrice must not be greater than maxPrice");
         }
         return service.filter(category, minPrice, maxPrice, page, size);
     }

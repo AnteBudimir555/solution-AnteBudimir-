@@ -3,6 +3,7 @@ package com.abysalto.middleware.exception;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.MessageSourceResolvable;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.security.access.AccessDeniedException;
@@ -16,6 +17,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 
 import java.net.URI;
 import java.time.Instant;
+import java.util.stream.Collectors;
 
 /**
  * Centralized error handling. Every failure is rendered as an RFC-7807 {@link ProblemDetail} with
@@ -38,16 +40,41 @@ public class GlobalExceptionHandler {
                 "The product source is currently unavailable.", "upstream-error");
     }
 
+    /** Simple bad requests whose own message is already client-safe. */
     @ExceptionHandler({
-            IllegalArgumentException.class,
-            ConstraintViolationException.class,
-            HandlerMethodValidationException.class,
-            MethodArgumentNotValidException.class,
+            InvalidRequestException.class,
             MissingServletRequestParameterException.class,
             MethodArgumentTypeMismatchException.class
     })
     public ProblemDetail handleBadRequest(Exception ex) {
         return problem(HttpStatus.BAD_REQUEST, "Invalid request", ex.getMessage(), "bad-request");
+    }
+
+    /** Bean Validation on a request body ({@code @Valid} DTO): report each field error. */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ProblemDetail handleBodyValidation(MethodArgumentNotValidException ex) {
+        String detail = ex.getBindingResult().getFieldErrors().stream()
+                .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
+                .collect(Collectors.joining("; "));
+        return validationProblem(detail);
+    }
+
+    /** Bean Validation on controller method parameters ({@code @RequestParam}/{@code @PathVariable}). */
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ProblemDetail handleParameterValidation(HandlerMethodValidationException ex) {
+        String detail = ex.getAllErrors().stream()
+                .map(MessageSourceResolvable::getDefaultMessage)
+                .collect(Collectors.joining("; "));
+        return validationProblem(detail);
+    }
+
+    /** Bean Validation surfaced as constraint violations (defensive; also covers direct usages). */
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ProblemDetail handleConstraintViolation(ConstraintViolationException ex) {
+        String detail = ex.getConstraintViolations().stream()
+                .map(v -> v.getPropertyPath() + ": " + v.getMessage())
+                .collect(Collectors.joining("; "));
+        return validationProblem(detail);
     }
 
     @ExceptionHandler(AuthenticationException.class)
@@ -68,6 +95,11 @@ public class GlobalExceptionHandler {
         log.error("Unexpected error", ex);
         return problem(HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error",
                 "An unexpected error occurred.", "internal-error");
+    }
+
+    private ProblemDetail validationProblem(String detail) {
+        return problem(HttpStatus.BAD_REQUEST, "Validation failed",
+                detail.isBlank() ? "Invalid request" : detail, "validation-failed");
     }
 
     private ProblemDetail problem(HttpStatus status, String title, String detail, String type) {

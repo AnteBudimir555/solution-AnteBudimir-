@@ -21,6 +21,9 @@ import java.util.List;
  */
 public interface ProductSource {
 
+    /** {@code limit} value requesting <em>all</em> matching items (see the pagination convention above). */
+    int ALL = 0;
+
     /** Returns a page of all products. */
     ProductPage list(int skip, int limit);
 

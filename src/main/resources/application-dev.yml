@@ -17,6 +17,17 @@ spring:
       enabled: true
       path: /h2-console
 
+middleware:
+  # Dev-only, intentionally insecure values. The postgres profile does not inherit these:
+  # it requires JWT_SECRET from the environment and keeps the seed user disabled.
+  jwt:
+    secret: dev-only-insecure-jwt-secret-please-override-in-real-environments-0123456789
+  security:
+    seed-user:
+      enabled: true
+      username: demo
+      password: demo1234
+
 logging:
   level:
     com.abysalto.middleware: DEBUG

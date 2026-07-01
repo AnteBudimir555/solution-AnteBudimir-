@@ -1,16 +1,11 @@
 package com.abysalto.middleware.service;
 
-import com.abysalto.middleware.config.CacheConfig;
-import com.abysalto.middleware.config.CacheKeys;
 import com.abysalto.middleware.domain.Product;
 import com.abysalto.middleware.domain.ProductPage;
 import com.abysalto.middleware.dto.PagedResponse;
 import com.abysalto.middleware.dto.ProductDetailDto;
 import com.abysalto.middleware.dto.ProductSummaryDto;
 import com.abysalto.middleware.source.ProductSource;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -19,20 +14,21 @@ import java.util.List;
 /**
  * Application service over the {@link ProductSource} abstraction. Responsible for pagination,
  * mapping to API DTOs and the in-service price-range filtering that the upstream cannot do.
+ *
+ * <p>Cache-backed upstream access for search/filter is delegated to {@link ProductQueryCache} (a
+ * separate bean so Spring's cache proxy is honoured and the price-filter candidate set can be cached
+ * independently of pagination); this service handles orchestration, in-service paging and mapping.
  */
 @Service
 public class ProductService {
 
-    private static final Logger log = LoggerFactory.getLogger(ProductService.class);
-
-    /** Source limit value meaning "return all matching items" (see {@link ProductSource}). */
-    private static final int ALL = 0;
-
     private final ProductSource source;
+    private final ProductQueryCache queries;
     private final ProductMapper mapper;
 
-    public ProductService(ProductSource source, ProductMapper mapper) {
+    public ProductService(ProductSource source, ProductQueryCache queries, ProductMapper mapper) {
         this.source = source;
+        this.queries = queries;
         this.mapper = mapper;
     }
 
@@ -49,56 +45,30 @@ public class ProductService {
 
     /**
      * Filters by category and/or price range (combinable). Category is pushed down to the source;
-     * price range is applied in-service. When a price bound is present the full candidate set is
-     * fetched so filtering and pagination stay consistent across pages.
+     * price range is applied in-service.
      *
-     * <p>Results are cached (Caffeine, {@code sync = true} for concurrent-request dedup) under a key
-     * normalized over all parameters. The category is normalized once via {@code CacheKeys} and that
-     * same value drives both the cache key and the upstream call, so equivalent inputs can never be
-     * served each other's result (TASK §4).
+     * <p>When no price bound is present the source paginates directly (cached per page). When a price
+     * bound is present the full price-filtered candidate set is fetched once (cached by category and
+     * price bounds via {@link ProductQueryCache}, independent of pagination) and the requested page is
+     * sliced from it here, so paging through the result never re-fetches the upstream catalog.
      */
-    @Cacheable(cacheNames = CacheConfig.FILTER_CACHE, sync = true,
-            key = "T(com.abysalto.middleware.config.CacheKeys).filter(#category, #minPrice, #maxPrice, #page, #size)")
     public PagedResponse<ProductSummaryDto> filter(String category, BigDecimal minPrice, BigDecimal maxPrice,
                                                    int page, int size) {
-        String normalizedCategory = CacheKeys.normalizeText(category);
-        boolean hasCategory = !normalizedCategory.isEmpty();
         boolean hasPriceFilter = minPrice != null || maxPrice != null;
 
         if (!hasPriceFilter) {
-            // No in-service filtering needed: let the source paginate.
-            ProductPage result = hasCategory
-                    ? source.findByCategory(normalizedCategory, offset(page, size), size)
-                    : source.list(offset(page, size), size);
+            ProductPage result = queries.categoryPage(category, page, size);
             return toSummaryPage(result.items(), page, size, result.total());
         }
 
-        // Price filter present: fetch the full candidate set, filter, then paginate in-service.
-        ProductPage candidates = hasCategory
-                ? source.findByCategory(normalizedCategory, 0, ALL)
-                : source.list(0, ALL);
-
-        List<Product> filtered = candidates.items().stream()
-                .filter(p -> matchesPrice(p.price(), minPrice, maxPrice))
-                .toList();
-        log.debug("Price filter [{}, {}] on {} candidates -> {} matches",
-                minPrice, maxPrice, candidates.items().size(), filtered.size());
-
+        List<Product> filtered = queries.priceFilteredCandidates(category, minPrice, maxPrice);
         List<Product> pageItems = paginate(filtered, page, size);
         return toSummaryPage(pageItems, page, size, filtered.size());
     }
 
-    /**
-     * Free-text search by product name (pushed down to the source). Results are cached (Caffeine,
-     * {@code sync = true} for concurrent-request dedup) under a key normalized over the query and
-     * pagination. The query is normalized once via {@code CacheKeys} and that same value drives both
-     * the cache key and the upstream call, so equivalent queries stay consistent (TASK §4).
-     */
-    @Cacheable(cacheNames = CacheConfig.SEARCH_CACHE, sync = true,
-            key = "T(com.abysalto.middleware.config.CacheKeys).search(#query, #page, #size)")
+    /** Free-text search by product name (pushed down to the source, cached per page). */
     public PagedResponse<ProductSummaryDto> searchByName(String query, int page, int size) {
-        String normalizedQuery = CacheKeys.normalizeText(query);
-        ProductPage result = source.searchByName(normalizedQuery, offset(page, size), size);
+        ProductPage result = queries.search(query, page, size);
         return toSummaryPage(result.items(), page, size, result.total());
     }
 
@@ -111,16 +81,6 @@ public class ProductService {
 
     private static int offset(int page, int size) {
         return page * size;
-    }
-
-    private static boolean matchesPrice(BigDecimal price, BigDecimal min, BigDecimal max) {
-        if (price == null) {
-            return false;
-        }
-        if (min != null && price.compareTo(min) < 0) {
-            return false;
-        }
-        return max == null || price.compareTo(max) <= 0;
     }
 
     private static <T> List<T> paginate(List<T> items, int page, int size) {

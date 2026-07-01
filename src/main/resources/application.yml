@@ -22,17 +22,20 @@ middleware:
   # Summary description hard cap (TASK §3.1).
   summary:
     description-max-length: 100
-  # JWT signing for locally-issued tokens. Override the secret in any real env.
+  # JWT signing for locally-issued tokens. No default secret is shipped: the value must come from
+  # the JWT_SECRET env var (or a profile, e.g. dev). A missing/short secret fails fast at startup
+  # (see JwtProperties validation), so a production-like profile can never fall back to a known key.
   jwt:
-    secret: ${JWT_SECRET:change-me-in-prod-please-use-a-long-random-32B+-secret-key}
+    secret: ${JWT_SECRET:}
     expiration-minutes: ${JWT_EXPIRATION_MINUTES:60}
     issuer: abysalto-middleware
-  # Seed user created on startup so the API can be exercised out of the box.
+  # Seed user. Disabled by default so production-like profiles never create a known-credential
+  # account; the dev profile enables it (demo/demo1234) so the API is usable out of the box.
   security:
     seed-user:
-      enabled: ${SEED_USER_ENABLED:true}
-      username: ${SEED_USER_USERNAME:demo}
-      password: ${SEED_USER_PASSWORD:demo1234}
+      enabled: ${SEED_USER_ENABLED:false}
+      username: ${SEED_USER_USERNAME:}
+      password: ${SEED_USER_PASSWORD:}
 
 # ---------------------------------------------------------------------------
 # Caching: Caffeine-backed Spring Cache for search/filter dedup (TASK §4).
