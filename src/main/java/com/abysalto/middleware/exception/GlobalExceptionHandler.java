@@ -79,9 +79,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(AuthenticationException.class)
     public ProblemDetail handleAuthentication(AuthenticationException ex) {
-        // Security-relevant: log the reason (never the submitted credentials).
+        // Log the real reason (never the submitted credentials), but return a generic detail: the
+        // specific cause (bad password vs. locked/disabled/expired account) must not leak to the
+        // client, as it enables account enumeration and state probing.
         log.warn("Authentication failed: {}", ex.getMessage());
-        return problem(HttpStatus.UNAUTHORIZED, "Authentication failed", ex.getMessage(), "unauthorized");
+        return problem(HttpStatus.UNAUTHORIZED, "Authentication failed",
+                "Invalid username or password.", "unauthorized");
     }
 
     @ExceptionHandler(AccessDeniedException.class)

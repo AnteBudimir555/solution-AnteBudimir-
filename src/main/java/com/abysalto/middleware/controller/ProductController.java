@@ -31,6 +31,13 @@ import java.util.List;
 @Tag(name = "Products", description = "Browse, filter and search products")
 public class ProductController {
 
+    /**
+     * Upper bound on the requested page index. With the max page size of 100 this bounds
+     * {@code page * size} well within {@code int} range, so the offset passed downstream can never
+     * overflow into a negative value.
+     */
+    private static final long MAX_PAGE = 10_000;
+
     private final ProductService service;
 
     public ProductController(ProductService service) {
@@ -40,7 +47,7 @@ public class ProductController {
     @GetMapping
     @Operation(summary = "List products", description = "Paginated trimmed product list")
     public PagedResponse<ProductSummaryDto> list(
-            @RequestParam(defaultValue = "0") @Min(0) int page,
+            @RequestParam(defaultValue = "0") @Min(0) @Max(MAX_PAGE) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
         return service.list(page, size);
     }
@@ -57,7 +64,7 @@ public class ProductController {
             @RequestParam(required = false) String category,
             @RequestParam(required = false) @PositiveOrZero BigDecimal minPrice,
             @RequestParam(required = false) @PositiveOrZero BigDecimal maxPrice,
-            @RequestParam(defaultValue = "0") @Min(0) int page,
+            @RequestParam(defaultValue = "0") @Min(0) @Max(MAX_PAGE) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
         if (minPrice != null && maxPrice != null && minPrice.compareTo(maxPrice) > 0) {
             throw new InvalidRequestException("minPrice must not be greater than maxPrice");
@@ -69,7 +76,7 @@ public class ProductController {
     @Operation(summary = "Search products by name", description = "Free-text search over product names")
     public PagedResponse<ProductSummaryDto> search(
             @RequestParam @NotBlank String q,
-            @RequestParam(defaultValue = "0") @Min(0) int page,
+            @RequestParam(defaultValue = "0") @Min(0) @Max(MAX_PAGE) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
         return service.searchByName(q, page, size);
     }
