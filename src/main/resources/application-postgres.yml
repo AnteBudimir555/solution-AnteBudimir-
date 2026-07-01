@@ -4,8 +4,10 @@ spring:
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/middleware}
     driver-class-name: org.postgresql.Driver
-    username: ${DB_USERNAME:middleware}
-    password: ${DB_PASSWORD:middleware}
+    # No defaults: an unset value fails placeholder resolution at startup, matching the fail-fast
+    # JWT_SECRET approach, so a production-like deployment can never fall back to known credentials.
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
   jpa:
     hibernate:
       # validate/update in real deployments; update keeps the demo self-contained.
