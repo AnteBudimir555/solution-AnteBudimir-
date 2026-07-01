@@ -57,8 +57,9 @@ final class DummyProductMapper {
     }
 
     private static List<Review> toReviews(List<DummyReview> reviews) {
+        // reviewerEmail is deliberately dropped here: it is upstream PII and is never surfaced by the API.
         return reviews == null ? null : reviews.stream()
-                .map(r -> new Review(r.rating(), r.comment(), r.date(), r.reviewerName(), r.reviewerEmail()))
+                .map(r -> new Review(r.rating(), r.comment(), r.date(), r.reviewerName()))
                 .toList();
     }
 }
