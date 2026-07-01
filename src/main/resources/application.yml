@@ -40,6 +40,15 @@ middleware:
   cache:
     spec: maximumSize=500,expireAfterWrite=60s
 
+# OpenAPI metadata (consumed by OpenApiConfig; defaults live in code). The API version is
+# deliberately decoupled from the Maven artifact version so the two can evolve independently.
+openapi:
+  title: Product Middleware API
+  description: >-
+    Middleware that re-exposes DummyJSON products with a trimmed shape, filtering,
+    name search, JWT auth and caching.
+  version: v1
+
 # springdoc / Swagger UI
 springdoc:
   swagger-ui:

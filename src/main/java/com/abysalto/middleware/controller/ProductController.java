@@ -5,7 +5,6 @@ import com.abysalto.middleware.dto.ProductDetailDto;
 import com.abysalto.middleware.dto.ProductSummaryDto;
 import com.abysalto.middleware.service.ProductService;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -29,7 +28,6 @@ import java.util.List;
 @RequestMapping("/api/products")
 @Validated
 @Tag(name = "Products", description = "Browse, filter and search products")
-@SecurityRequirement(name = "bearerAuth")
 public class ProductController {
 
     private final ProductService service;

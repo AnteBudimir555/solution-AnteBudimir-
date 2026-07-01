@@ -4,6 +4,7 @@ import com.abysalto.middleware.dto.LoginRequest;
 import com.abysalto.middleware.dto.LoginResponse;
 import com.abysalto.middleware.security.JwtService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -37,6 +38,8 @@ public class AuthController {
 
     @PostMapping("/login")
     @Operation(summary = "Log in", description = "Authenticate with username/password and receive a JWT")
+    // Public endpoint: clear the globally-applied bearerAuth requirement so Swagger shows no lock here.
+    @SecurityRequirements
     public LoginResponse login(@Valid @RequestBody LoginRequest request) {
         Authentication authentication = authenticationManager.authenticate(
                 new UsernamePasswordAuthenticationToken(request.username(), request.password()));

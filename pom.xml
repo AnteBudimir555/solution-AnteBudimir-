@@ -85,8 +85,9 @@
 			<version>${caffeine.version}</version>
 		</dependency>
 
-		<!-- OpenAPI / Swagger UI (springdoc). NOTE: 2.8.x targets Spring Framework 6;
-		     runtime compatibility with Boot 4 / Framework 7 is verified in Phase 8. -->
+		<!-- OpenAPI / Swagger UI (springdoc). 2.8.x targets Spring Framework 6, but its
+		     runtime compatibility with Boot 4.1 / Framework 7 was verified in Phase 8:
+		     /v3/api-docs (OpenAPI 3.1.0) and Swagger UI render with the JWT bearer scheme. -->
 		<dependency>
 			<groupId>org.springdoc</groupId>
 			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
