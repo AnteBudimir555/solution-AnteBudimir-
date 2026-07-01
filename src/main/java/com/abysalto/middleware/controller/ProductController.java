@@ -11,6 +11,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.PositiveOrZero;
+import jakarta.validation.constraints.Size;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -38,6 +39,9 @@ public class ProductController {
      */
     private static final long MAX_PAGE = 10_000;
 
+    /** Upper bound on free-text params (search query, category) to reject unbounded input. */
+    private static final int MAX_TEXT_PARAM = 100;
+
     private final ProductService service;
 
     public ProductController(ProductService service) {
@@ -61,7 +65,7 @@ public class ProductController {
     @GetMapping("/filter")
     @Operation(summary = "Filter products", description = "Filter by category and/or price range (combinable)")
     public PagedResponse<ProductSummaryDto> filter(
-            @RequestParam(required = false) String category,
+            @RequestParam(required = false) @Size(max = MAX_TEXT_PARAM) String category,
             @RequestParam(required = false) @PositiveOrZero BigDecimal minPrice,
             @RequestParam(required = false) @PositiveOrZero BigDecimal maxPrice,
             @RequestParam(defaultValue = "0") @Min(0) @Max(MAX_PAGE) int page,
@@ -75,7 +79,7 @@ public class ProductController {
     @GetMapping("/search")
     @Operation(summary = "Search products by name", description = "Free-text search over product names")
     public PagedResponse<ProductSummaryDto> search(
-            @RequestParam @NotBlank String q,
+            @RequestParam @NotBlank @Size(max = MAX_TEXT_PARAM) String q,
             @RequestParam(defaultValue = "0") @Min(0) @Max(MAX_PAGE) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
         return service.searchByName(q, page, size);
