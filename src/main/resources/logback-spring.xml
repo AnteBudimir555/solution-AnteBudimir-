@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Logging configuration.
+
+    - Non-prod profiles (dev/test/default): human-readable console pattern, driven by
+      logging.pattern.console in application.yml (CONSOLE_LOG_PATTERN), including the correlation id.
+    - postgres (production-like) profile: one JSON object per line so a log aggregator can query
+      correlationId / method / path / status / durationMs as discrete fields. Those request-scoped
+      values are placed in the MDC by RequestLoggingFilter.
+
+    Log levels stay in application.yml (logging.level.*); Spring Boot applies them on top of this file.
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- Human-readable console for local/dev and any non-production profile. -->
+    <springProfile name="!postgres">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>${CONSOLE_LOG_PATTERN}</pattern>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <!-- Machine-structured JSON logs for the production-like (postgres) profile. All MDC entries
+         (correlationId, method, path, status, durationMs) are emitted as top-level fields. -->
+    <springProfile name="postgres">
+        <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <includeContext>false</includeContext>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="JSON"/>
+        </root>
+    </springProfile>
+</configuration>

@@ -25,6 +25,11 @@ import java.util.regex.Pattern;
  * response as {@value #CORRELATION_ID_HEADER} so clients and downstream systems can quote it when
  * reporting issues.
  *
+ * <p>The request method/path (and, on completion, the response status and duration) are also written
+ * to the MDC so the JSON encoder used by the {@code postgres} profile emits them as discrete,
+ * queryable fields. The human-readable console pattern only renders the correlation id, so these
+ * extra keys are invisible there.
+ *
  * <p>Runs at {@link Ordered#HIGHEST_PRECEDENCE} so the id is established before the Spring Security
  * chain executes; authentication/authorization failures rendered from within that chain therefore
  * still carry the correlation id. The MDC is always cleared in a {@code finally} block to avoid
@@ -41,6 +46,12 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
     /** MDC key holding the correlation id; must match the {@code %X{correlationId}} log pattern. */
     public static final String CORRELATION_ID_MDC_KEY = "correlationId";
 
+    /** MDC keys for the request-scoped fields the JSON encoder emits (unused by the text pattern). */
+    private static final String METHOD_MDC_KEY = "method";
+    private static final String PATH_MDC_KEY = "path";
+    private static final String STATUS_MDC_KEY = "status";
+    private static final String DURATION_MDC_KEY = "durationMs";
+
     /** Request/response header carrying the correlation id. */
     public static final String CORRELATION_ID_HEADER = "X-Correlation-Id";
 
@@ -55,6 +66,8 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
                                     FilterChain filterChain) throws ServletException, IOException {
         String correlationId = resolveCorrelationId(request);
         MDC.put(CORRELATION_ID_MDC_KEY, correlationId);
+        MDC.put(METHOD_MDC_KEY, request.getMethod());
+        MDC.put(PATH_MDC_KEY, requestPath(request));
         response.setHeader(CORRELATION_ID_HEADER, correlationId);
 
         long startNanos = System.nanoTime();
@@ -64,9 +77,13 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
             // Single completion line (also emitted on failure via finally): carries method, path,
             // status and duration, so a separate entry line would only add noise.
             long tookMs = (System.nanoTime() - startNanos) / 1_000_000;
+            MDC.put(STATUS_MDC_KEY, Integer.toString(response.getStatus()));
+            MDC.put(DURATION_MDC_KEY, Long.toString(tookMs));
             log.info("{} {} -> {} ({} ms)", request.getMethod(), requestPath(request),
                     response.getStatus(), tookMs);
-            MDC.remove(CORRELATION_ID_MDC_KEY);
+            // Clear the whole MDC (not just the correlation id) so none of the request-scoped keys
+            // leak onto the pooled request thread.
+            MDC.clear();
         }
     }
 
