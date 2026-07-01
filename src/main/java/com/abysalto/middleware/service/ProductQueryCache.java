@@ -7,6 +7,7 @@ import com.abysalto.middleware.domain.ProductPage;
 import com.abysalto.middleware.source.ProductSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
@@ -36,9 +37,13 @@ public class ProductQueryCache {
     private static final Logger log = LoggerFactory.getLogger(ProductQueryCache.class);
 
     private final ProductSource source;
+    private final int maxInMemoryCandidates;
 
-    public ProductQueryCache(ProductSource source) {
+    public ProductQueryCache(
+            ProductSource source,
+            @Value("${middleware.upstream.max-in-memory-candidates:5000}") int maxInMemoryCandidates) {
         this.source = source;
+        this.maxInMemoryCandidates = maxInMemoryCandidates;
     }
 
     /** One page of name-search results (pagination pushed down to the source). */
@@ -72,11 +77,20 @@ public class ProductQueryCache {
                 ? source.list(0, ProductSource.ALL)
                 : source.findByCategory(normalizedCategory, 0, ProductSource.ALL);
 
+        int candidateCount = candidates.items().size();
+        if (candidateCount > maxInMemoryCandidates) {
+            // Price filtering cannot be pushed down to the current source, so the full candidate set is
+            // held in memory. This is safe for DummyJSON's small catalog; a larger source should push the
+            // price filter down or bound the fetch rather than materialize everything here.
+            log.warn("Price filter loaded {} candidates into memory (threshold {}); consider pushing the "
+                    + "price filter down to the source or bounding the fetch.", candidateCount, maxInMemoryCandidates);
+        }
+
         List<Product> filtered = candidates.items().stream()
                 .filter(p -> matchesPrice(p.price(), minPrice, maxPrice))
                 .toList();
         log.debug("Price filter [{}, {}] on {} candidates -> {} matches",
-                minPrice, maxPrice, candidates.items().size(), filtered.size());
+                minPrice, maxPrice, candidateCount, filtered.size());
         return filtered;
     }
 
