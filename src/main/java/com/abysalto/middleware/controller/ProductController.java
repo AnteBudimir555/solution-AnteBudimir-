@@ -10,6 +10,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 import org.springframework.validation.annotation.Validated;
@@ -58,7 +59,7 @@ public class ProductController {
 
     @GetMapping("/{id}")
     @Operation(summary = "Product details", description = "Full detail of a single product by id")
-    public ProductDetailDto getById(@PathVariable long id) {
+    public ProductDetailDto getById(@PathVariable @Positive long id) {
         return service.getById(id);
     }
 
