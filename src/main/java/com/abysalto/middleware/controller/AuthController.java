@@ -6,6 +6,8 @@ import com.abysalto.middleware.security.JwtService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
@@ -23,6 +25,8 @@ import org.springframework.web.bind.annotation.RestController;
 @Tag(name = "Authentication", description = "Obtain a JWT for accessing protected endpoints")
 public class AuthController {
 
+    private static final Logger log = LoggerFactory.getLogger(AuthController.class);
+
     private final AuthenticationManager authenticationManager;
     private final JwtService jwtService;
 
@@ -37,6 +41,8 @@ public class AuthController {
         Authentication authentication = authenticationManager.authenticate(
                 new UsernamePasswordAuthenticationToken(request.username(), request.password()));
         String token = jwtService.issueToken(authentication.getName());
+        // Log the identity only — never the password or the issued token.
+        log.info("Issued JWT for user '{}'", authentication.getName());
         return LoginResponse.bearer(token, jwtService.expiresInSeconds());
     }
 }

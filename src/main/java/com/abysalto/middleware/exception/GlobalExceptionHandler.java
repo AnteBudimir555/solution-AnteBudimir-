@@ -52,11 +52,14 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(AuthenticationException.class)
     public ProblemDetail handleAuthentication(AuthenticationException ex) {
+        // Security-relevant: log the reason (never the submitted credentials).
+        log.warn("Authentication failed: {}", ex.getMessage());
         return problem(HttpStatus.UNAUTHORIZED, "Authentication failed", ex.getMessage(), "unauthorized");
     }
 
     @ExceptionHandler(AccessDeniedException.class)
     public ProblemDetail handleAccessDenied(AccessDeniedException ex) {
+        log.warn("Access denied: {}", ex.getMessage());
         return problem(HttpStatus.FORBIDDEN, "Access denied", ex.getMessage(), "forbidden");
     }
 
