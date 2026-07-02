@@ -218,6 +218,11 @@ Profiles:
   (fail-fast), seeding off unless explicitly enabled.
 - **`test`** — H2, used by the automated tests.
 
+> **Schema management:** the `postgres` profile uses Hibernate `ddl-auto: update` to stay
+> self-contained for the demo. A real deployment should set `ddl-auto: validate` and manage the
+> schema with versioned migrations (Flyway or Liquibase) instead of letting Hibernate mutate it at
+> startup.
+
 ---
 
 ## Caching / request deduplication
