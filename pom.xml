@@ -152,6 +152,30 @@
 
 	<build>
 		<plugins>
+			<!-- Resolves dependency artifacts to path properties (e.g. ${org.mockito:mockito-core:jar})
+			     so the Mockito agent can be attached explicitly below instead of self-attaching. -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-dependency-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>resolve-agent-paths</id>
+						<goals>
+							<goal>properties</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+			<!-- Load Mockito's inline mock-maker as a java agent up front. Self-attachment is deprecated
+			     and will be disallowed by a future JDK, so pinning it here keeps the CI build warning-free
+			     and forward-compatible (unit tests / surefire). -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<argLine>-javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+				</configuration>
+			</plugin>
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
@@ -169,6 +193,9 @@
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-failsafe-plugin</artifactId>
+				<configuration>
+					<argLine>-javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+				</configuration>
 				<executions>
 					<execution>
 						<goals>
