@@ -11,13 +11,17 @@ WORKDIR /workspace
 
 # Copy the Maven wrapper and POM first so dependency resolution caches in its own
 # layer and is only redone when the build config changes (not on every source edit).
+# The BuildKit cache mount persists ~/.m2 across builds independently of layer
+# invalidation, so a pom change re-fetches only what actually changed instead of
+# re-downloading every dependency from scratch.
 COPY .mvn/ .mvn/
 COPY mvnw pom.xml ./
-RUN chmod +x mvnw && ./mvnw -B -q dependency:go-offline
+RUN --mount=type=cache,target=/root/.m2 chmod +x mvnw && ./mvnw -B -q dependency:go-offline
 
-# Copy sources and build the repackaged (fat) jar.
+# Copy sources and build the repackaged (fat) jar. Same cache mount so the package
+# step reuses the resolved dependencies rather than re-downloading them.
 COPY src/ src/
-RUN ./mvnw -B -q -DskipTests clean package
+RUN --mount=type=cache,target=/root/.m2 ./mvnw -B -q -DskipTests package
 
 # ---------------------------------------------------------------------------
 # Runtime stage: minimal JRE with only the packaged jar. The bytecode is at
