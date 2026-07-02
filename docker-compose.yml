@@ -1,24 +1,25 @@
 # One-command startup: Postgres + the middleware running under the `postgres` profile.
 #
+#   cp .env.example .env      # then edit JWT_SECRET for anything real
 #   docker compose up --build
 #
 # The postgres profile has NO defaults for DB_USERNAME / DB_PASSWORD / JWT_SECRET and fails fast at
-# startup if any is unset, so this file supplies them. Each value can be overridden from the shell
-# environment or a local `.env` file (e.g. `JWT_SECRET=... docker compose up`); the fallbacks after
-# `:-` are demo defaults so a plain `docker compose up` works out of the box.
+# startup if any is unset. This file mirrors that: values come from the auto-loaded `.env` (copy it
+# from `.env.example`), and `JWT_SECRET` has no fallback here either — Compose fails fast with a
+# helpful message if it is missing, so a known signing key is never baked into a tracked file.
 services:
   db:
     image: postgres:17
     environment:
       POSTGRES_DB: middleware
-      POSTGRES_USER: ${DB_USERNAME:-middleware}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-middleware}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-middleware} -d middleware"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME} -d middleware"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -31,10 +32,11 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: postgres
       DB_URL: jdbc:postgresql://db:5432/middleware
-      DB_USERNAME: ${DB_USERNAME:-middleware}
-      DB_PASSWORD: ${DB_PASSWORD:-middleware}
-      # Demo secret only — override with a real 32+ byte secret in any real deployment.
-      JWT_SECRET: ${JWT_SECRET:-docker-demo-insecure-jwt-secret-change-me-0123456789}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      # Required — no fallback. Compose fails fast (like the app does) if unset, so a known signing
+      # key is never committed. Provide it via `.env` (copy from `.env.example`) or the shell.
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (copy .env.example)}
       # Demo only: seed a known user so the JWT-protected API is testable immediately. The postgres
       # profile keeps seeding disabled unless SEED_USER_ENABLED is explicitly set (as it is here).
       SEED_USER_ENABLED: "true"

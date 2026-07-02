@@ -137,12 +137,16 @@ external services or configuration required.
 Builds the image and starts the app under the `postgres` profile against a Postgres container.
 
 ```bash
+cp .env.example .env      # then edit JWT_SECRET for anything real
 docker compose up --build
 ```
 
-`docker-compose.yml` supplies `DB_USERNAME`, `DB_PASSWORD`, and `JWT_SECRET` (the `postgres` profile
-has **no defaults** for these and fails fast if any is missing). All have demo fallbacks, so a plain
-`docker compose up` works; override any of them via the shell or a `.env` file:
+Compose auto-loads `.env` (copied from the committed `.env.example`) for `DB_USERNAME`,
+`DB_PASSWORD`, and `JWT_SECRET`. The `postgres` profile has **no defaults** for these and fails fast
+if any is missing — and `docker-compose.yml` mirrors that for `JWT_SECRET`, so a known signing key is
+never baked into a tracked file. The `.env.example` values are throwaway demo secrets; generate a
+real one for any real deployment (`openssl rand -base64 48`). You can also override per-invocation
+from the shell:
 
 ```bash
 JWT_SECRET='a-strong-secret-at-least-32-bytes-long' docker compose up --build

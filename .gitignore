@@ -2,6 +2,8 @@ HELP.md
 # Local planning / task brief — kept out of the deliverable history
 TASK.md
 implementation_plan.md
+# Local secrets for docker compose — copy .env.example to .env (never commit .env)
+.env
 target/
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
