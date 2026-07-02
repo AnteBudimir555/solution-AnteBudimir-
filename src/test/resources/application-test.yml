@@ -1,6 +1,7 @@
 # Test profile: isolated in-memory H2, deterministic schema, seed user disabled
-# (tests create their own fixtures). Upstream base-url is overridden per-test to
-# point at MockWebServer so no real network calls are made.
+# (tests create their own fixtures). Upstream is never hit: unit tests bind
+# MockRestServiceServer to the RestClient builder, and the @SpringBootTest ITs
+# replace ProductSource with a @MockitoBean.
 spring:
   datasource:
     url: jdbc:h2:mem:middleware-test;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
@@ -20,7 +21,8 @@ middleware:
     secret: test-secret-key-that-is-sufficiently-long-for-hs256-signing-0123456789
     expiration-minutes: 60
   cache:
-    spec: maximumSize=100,expireAfterWrite=2s
+    # No expireAfterWrite: caching-dedup assertions must not race a TTL.
+    spec: maximumSize=100
 
 logging:
   level:
