@@ -343,9 +343,5 @@ src/main/java/com/abysalto/middleware
 
 ## AI usage disclosure
 
-This project was built with the assistance of **Claude Code** (Anthropic). AI was used to scaffold the
-Spring Boot project, design and implement the `ProductSource` abstraction and DummyJSON adapter, the
-DTO/mapping and truncation logic, filtering/search/caching, JWT security, error handling, logging,
-OpenAPI setup, the unit and integration test suite, and this documentation and the Docker/Compose
-delivery files. All generated code was reviewed and adjusted incrementally, with progress reflected in
+This project was built with the assistance of **Claude Code** (Anthropic). All generated code was reviewed and adjusted incrementally, with progress reflected in
 the git history. Design intent and rationale are captured in code comments throughout.
