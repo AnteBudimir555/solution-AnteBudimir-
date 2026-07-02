@@ -14,8 +14,11 @@ services:
       POSTGRES_DB: middleware
       POSTGRES_USER: ${DB_USERNAME}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
+    # The app reaches the DB over the internal Compose network (db:5432); no host mapping is needed.
+    # Bind to loopback only so the demo credentials are never exposed to the host/LAN. Remove this
+    # block entirely if you do not need local psql/GUI access.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
