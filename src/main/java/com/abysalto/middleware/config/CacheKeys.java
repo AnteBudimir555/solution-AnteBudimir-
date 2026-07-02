@@ -9,8 +9,8 @@ import java.util.Locale;
  * (e.g. {@code 10} vs {@code 10.00}) and absent price bounds all collapse to one key.
  *
  * <p>{@link #normalizeText(String)} is the single source of truth for free-text normalization: the
- * {@code @Cacheable} SpEL keys in {@code ProductService} and the service body both run the query and
- * category through it before use, so the cache key and the actual upstream call can never diverge
+ * {@code @Cacheable} SpEL keys in {@code ProductQueryCache} and the method bodies both run the query
+ * and category through it before use, so the cache key and the actual upstream call can never diverge
  * (two inputs share a key only when they also produce the same upstream call).
  */
 public final class CacheKeys {
