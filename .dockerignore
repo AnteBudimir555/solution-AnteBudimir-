@@ -1,0 +1,25 @@
+# Build output — the image rebuilds it from source inside the build stage.
+target/
+
+# Local tooling / IDE / VCS metadata not needed in the build context.
+.git/
+.gitignore
+.gitattributes
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# Local planning docs (kept out of the deliverable).
+HELP.md
+TASK.md
+task.md
+implementation_plan.md
+implementation_Plan.md
+
+# Docker artifacts themselves.
+Dockerfile
+.dockerignore
+docker-compose.yml

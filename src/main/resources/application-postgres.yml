@@ -23,9 +23,12 @@ spring:
       enabled: false
 
 # JWT_SECRET must be supplied via the environment in this profile; there is no default (see
-# application.yml), so startup fails fast if it is missing. The seed user stays disabled so no
-# known-credential account is ever created in a production-like deployment.
+# application.yml), so startup fails fast if it is missing. Seeding stays disabled by default, so no
+# known-credential account is ever created unless it is explicitly opted into via SEED_USER_ENABLED
+# (the docker-compose demo sets it so the protected API is testable out of the box).
 middleware:
   security:
     seed-user:
-      enabled: false
+      enabled: ${SEED_USER_ENABLED:false}
+      username: ${SEED_USER_USERNAME:}
+      password: ${SEED_USER_PASSWORD:}
