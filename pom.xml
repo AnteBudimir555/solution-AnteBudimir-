@@ -28,7 +28,7 @@
 	</scm>
 	<properties>
 		<java.version>21</java.version>
-		<springdoc.version>2.8.6</springdoc.version>
+		<springdoc.version>3.0.3</springdoc.version>
 		<jjwt.version>0.12.6</jjwt.version>
 		<caffeine.version>3.2.0</caffeine.version>
 		<logstash-logback.version>8.1</logstash-logback.version>
@@ -91,9 +91,8 @@
 			<version>${logstash-logback.version}</version>
 		</dependency>
 
-		<!-- OpenAPI / Swagger UI (springdoc). 2.8.x targets Spring Framework 6, but its
-		     runtime compatibility with Boot 4.1 / Framework 7 was verified in Phase 8:
-		     /v3/api-docs (OpenAPI 3.1.0) and Swagger UI render with the JWT bearer scheme. -->
+		<!-- OpenAPI / Swagger UI (springdoc). The 3.0.x line targets Spring Framework 7 / Boot 4
+		     (2.x targets Framework 6 / Boot 3), so it is aligned with this project's stack. -->
 		<dependency>
 			<groupId>org.springdoc</groupId>
 			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
