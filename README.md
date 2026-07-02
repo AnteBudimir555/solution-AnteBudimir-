@@ -40,7 +40,7 @@ diranja kontrolera, servisa ili DTO-ova — DummyJSON je samo jedna konkretna im
 | Framework          | Spring Boot 4.1.0 (Spring Web MVC, sinkroni `RestClient`)       |
 | Alat za izgradnju         | Maven (putem priloženog `./mvnw` wrappera)                           |
 | Perzistencija        | Spring Data JPA / Hibernate — H2 (dev/test), PostgreSQL (Docker)   |
-| Sigurnost           | Spring Security, bezstanjski JWT (jjwt), BCrypt hashiranje lozinki     |
+| Sigurnost           | Spring Security, stateless JWT (jjwt), BCrypt hashiranje lozinki     |
 | Keširanje            | Spring Cache s Caffeine pozadinom                                    |
 | API dokumentacija           | springdoc-openapi (Swagger UI)                                     |
 | Logiranje            | SLF4J / Logback, MDC korelacijski id, JSON logovi u prod profilu |
@@ -176,7 +176,7 @@ export SEED_USER_ENABLED=true SEED_USER_USERNAME=demo SEED_USER_PASSWORD=demo123
 ## Autentifikacija i testni korisnik
 
 Autentifikacija je **temeljena na tokenu (JWT)** s lokalnom JPA tablicom korisnika (`UserAccount`),
-BCrypt-hashiranim lozinkama i bezstanjskim Spring Security lancem filtara.
+BCrypt-hashiranim lozinkama i stateless Spring Security lancem filtara.
 
 1. **Dohvat tokena** — `POST /api/auth/login` s `{"username": "...", "password": "..."}`.
    Odgovor je `{ "token", "tokenType": "Bearer", "expiresInSeconds" }`.
@@ -185,7 +185,7 @@ BCrypt-hashiranim lozinkama i bezstanjskim Spring Security lancem filtara.
 **Testni korisnik:** i dev profil i Docker Compose demo posijeku **`demo` / `demo1234`**. Pogrešne
 vjerodajnice vraćaju `401`; nedostajući/istekao/nevažeći token na zaštićenom endpointu vraća `401`.
 
-> JWT tajna se nikada ne isporučuje sa zadanom vrijednošću. Mora biti dostavljena putem `JWT_SECRET`
+> JWT SECRET se nikada ne isporučuje sa zadanom vrijednošću. Mora biti dostavljena putem `JWT_SECRET`
 > (ili jednokratne vrijednosti dev profila) i mora imati **≥ 32 znaka** za HS256, inače aplikacija brzo
 > puca pri pokretanju.
 
