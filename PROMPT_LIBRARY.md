@@ -1,9 +1,3 @@
-# PROMPT_LIBRARY.md
-
-> **Project:** Product Middleware REST API (Abysalto Backend Academy entry task)
-> **Purpose:** A chronological, end-to-end prompt library for building this project greenfield with an AI coding assistant.
-> **Scope:** Every prompt below is hardcoded to *this* project's stack and domain — a Spring Boot middleware that re-exposes DummyJSON products behind an extensible `ProductSource` abstraction.
-
 ## Hardcoded Tech Stack (derived from `TASK.md`)
 
 | Concern | Choice |
@@ -21,25 +15,13 @@
 | Containerization | **Docker + docker-compose** (app + PostgreSQL) |
 | Upstream source | **DummyJSON** (`https://dummyjson.com`) — products, categories, search, auth |
 
-### Domain invariants every prompt must respect
-- **Middleware, not a passthrough:** clients never see raw DummyJSON shapes.
-- **Extensible source:** all endpoints depend on a `ProductSource` interface; `DummyJsonProductSource` is one concrete impl. Adding a DB/file/RSS source later must require **zero** controller/service changes.
-- **Two DTO shapes:** a *summary* DTO (`image`, `name`, `price`, `shortDescription` ≤ 100 chars) for list/filter/search; a *detail* DTO (full fields) for single-product.
-- **Safe truncation:** `shortDescription` is hard-capped at 100 chars, null-safe.
-- **Push down where possible:** prefer upstream `limit`/`skip`, `/search?q=`, `/category/{category}`, `?select=`; filter in-service only when upstream can't (document the choice).
 
-### How to use this library
-Work the phases **in order**. Each phase gives you: *Context & Purpose* (when to fire it), *The Exact Prompt Text* (copy-paste; fill `{{PLACEHOLDERS}}`), and *Expected Output Format*. Feed the output of one phase as context into the next. Commit after each meaningful step.
 
----
+
 
 ## Phase 1 — Project Initialization & Architecture Design
 
-### Context & Purpose
-Fire this **once, at the very start**, on an empty repository. It produces the Maven project skeleton, the layered package structure, the `ProductSource` abstraction contract, configuration files, and the architectural decisions that every later phase builds on. Do not write feature code yet — this phase decides *where* code will live and *how* sources plug in.
 
-### The Exact Prompt Text
-```
 You are a Principal Software Architect expert in Java 17, Spring Boot 3.x, Spring Data
 JPA/Hibernate, Spring Security, Maven, and REST middleware/gateway design.
 
@@ -87,24 +69,11 @@ YOUR TASK — produce the architecture and skeleton ONLY (no business logic yet)
 
 Do NOT implement endpoint logic, the DummyJSON client body, or entities yet — only interfaces,
 config, build files, and the skeleton with clearly marked `// TODO Phase N` stubs.
-```
 
-### Expected Output Format
-- Present the **package tree** first as a fenced ASCII diagram, with a one-line rationale table beneath it.
-- Emit each file in its own fenced block, **prefixed by its exact repo-relative path** as a comment on the first line (e.g. `// src/main/java/com/abysalto/middleware/source/ProductSource.java`).
-- `pom.xml` and `application*.yml` as complete, valid, copy-paste-ready files with **pinned versions** (no `LATEST`/`RELEASE`).
-- Interfaces fully typed with Javadoc on each method describing contract + edge cases; method bodies that belong to later phases are `throw new UnsupportedOperationException("TODO Phase 3")` or clearly commented stubs.
-- End with a **numbered ADR list** and a **"Next steps → Phase 2"** handoff line naming the files Phase 2 must create.
-
----
 
 ## Phase 2 — Database & State Modeling
 
-### Context & Purpose
-Fire this after the skeleton compiles. It designs the JPA persistence layer the task calls for — the local **user table** that backs JWT auth, and the **cache/state** structures (whether a persisted cache table or the in-memory Caffeine key model). Even though products are fetched live from DummyJSON, persistence exists for users, auth, and optional local product caching.
 
-### The Exact Prompt Text
-```
 You are a Senior Database Engineer / Data Architect expert in Spring Data JPA, Hibernate, H2,
 and PostgreSQL, designing schemas for a Spring Boot 3.x middleware service.
 
@@ -112,12 +81,6 @@ Think step-by-step. Prioritize normalized, type-safe, migration-friendly schema 
 indexing for the query patterns, and security (never store plaintext secrets) over shortcuts.
 Enumerate edge cases (nullability, uniqueness, concurrent writes, cache staleness) explicitly.
 
-CONTEXT:
-This middleware fetches products live from DummyJSON, so products themselves are NOT the primary
-persisted entity. Persistence exists for: (a) local application users backing JWT auth, and
-(b) OPTIONAL local product caching / request-dedup state. The service runs on H2 in dev/test and
-PostgreSQL in prod via Spring profiles. Entities are consumed by a service layer that sits behind
-the `ProductSource` abstraction defined in Phase 1.
 
 YOUR TASK:
 1. Design the `User` entity for local auth: id, username (unique), password hash (BCrypt), roles
@@ -154,11 +117,7 @@ DummyJSON field names.
 
 ## Phase 3 — Core Feature Implementation
 
-### Context & Purpose
-The main build phase. Fire it **once per feature slice** (list, detail, filter, search, then auth as its own slice), reusing the same persona and feeding it the Phase 1 interface + Phase 2 entities. It implements the `DummyJsonProductSource`, the mapping/truncation logic, the service layer, the controllers, DTO validation, and the global error handling.
 
-### The Exact Prompt Text
-```
 You are a Senior Software Engineer expert in Java 17, Spring Boot 3.x, Spring Web, Spring Data
 JPA, Spring Security, and clean layered REST design.
 
@@ -204,23 +163,11 @@ Return production-ready code. Do not stub. Do not break the source abstraction. 
 logic already produced in earlier slices — extend it.
 ```
 
-### Expected Output Format
-- One fenced block per file, each **prefixed with its repo-relative path comment**; group by layer (source impl → mapper → service → controller → dto → exception).
-- Request/response DTOs as Java `record`s where immutable, fully annotated with `jakarta.validation` constraints; **no field leaks the DummyJSON schema**.
-- A **global `@RestControllerAdvice`** producing a consistent error body (`timestamp`, `status`, `error`, `message`, `path`) — emit it in the first slice and reference (don't re-emit) it afterward.
-- Each new/changed endpoint documented inline with springdoc annotations (`@Operation`, `@ApiResponse`).
-- Precede the code with a **contract + edge-case checklist** (null description, empty search, price min>max, unknown category, upstream 5xx/timeout, page beyond range) and mark each ✅ handled.
-- Close with a **"Next steps → Phase 4"** line naming the exact classes/methods now needing tests.
 
----
 
 ## Phase 4 — Automated Test Generation
 
-### Context & Purpose
-Fire this after each slice from Phase 3 compiles and runs. It generates the unit + integration tests the task explicitly requires, with the DummyJSON upstream **stubbed via WireMock** so tests are deterministic and offline. Cover the source abstraction, truncation/mapping, filtering, search, and auth.
 
-### The Exact Prompt Text
-```
 You are a Lead QA Automation Engineer expert in JUnit 5, Mockito, Spring Boot Test, MockMvc,
 WireMock, and testing Spring Boot 3.x REST middleware.
 
@@ -261,23 +208,9 @@ Do not write assertion-free or tautological tests. Each test name must state the
 expected outcome.
 ```
 
-### Expected Output Format
-- One fenced block per test file, each **prefixed with its repo-relative path comment** under `src/test/java/...`; unit and integration tests in separate files.
-- Begin with a **test matrix table**: scenario → input → expected output/status → test type (unit/integration).
-- WireMock stubs and JSON fixtures emitted as separate files under `src/test/resources/...` (referenced, not inlined into every test).
-- Test method names in `should_<expected>_when_<condition>` form; use `@DisplayName` for readable output.
-- Parameterized boundary cases presented with an explicit `@MethodSource`/`@CsvSource` data table.
-- Close with a **coverage note**: which task acceptance-checklist items each test file satisfies, and any gap deferred to Phase 5.
-
----
 
 ## Phase 5 — Code Review, QA & Optimization
 
-### Context & Purpose
-Fire this **before considering the project done / before the final commit**. It's an adversarial review pass: a strict reviewer hunts for security holes (JWT, secret handling), performance issues (upstream N+1, missing cache hits), abstraction leaks (DummyJSON bleeding through), and clean-code / task-compliance gaps against the acceptance checklist.
-
-### The Exact Prompt Text
-```
 You are a Strict Technical Reviewer / Staff Engineer specializing in Java 17, Spring Boot 3.x
 security, performance, and clean architecture, reviewing a product middleware before release.
 
@@ -317,20 +250,6 @@ REVIEW CHECKLIST — report findings under each heading, most severe first:
 For each finding: Severity (Critical/High/Medium/Low) · File:method · Risk · Recommended fix
 (with a corrected code snippet where useful).
 ```
-
-### Expected Output Format
-- Lead with a **verdict line** (Ship / Ship-with-fixes / Block) and a one-paragraph summary.
-- A **findings table**: `#`, Severity, Location (file:method), Category, Risk, Fix.
-- Group detailed findings by the six checklist headings, **most severe first**; include corrected code snippets in fenced blocks with the repo-relative path comment.
-- A final **Acceptance Checklist audit** table: each `TASK.md` item → PASS / FAIL / PARTIAL → evidence/line reference.
-- End with a prioritized, numbered **remediation plan** (do-first ordering) and a note on which fixes need a new test in Phase 4.
-
----
-
-## Appendix — Cross-Cutting Micro-Prompts
-
-Small, reusable prompts for recurring greenfield chores. Same persona discipline applies.
-
 ### A1 · README authoring
 ```
 You are a Senior Developer Advocate expert in Spring Boot 3.x and Docker documentation.
