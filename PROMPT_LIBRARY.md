@@ -1,4 +1,4 @@
-Used prompts in this project.
+Used prompts in this project.Claude also helped with this file.
 
 ## Hardcoded Tech Stack (derived from `TASK.md`)
 
