@@ -1,3 +1,5 @@
+Used prompts in this project.
+
 ## Hardcoded Tech Stack (derived from `TASK.md`)
 
 | Concern | Choice |
