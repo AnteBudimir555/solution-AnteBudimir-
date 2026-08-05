@@ -189,22 +189,30 @@ Dependency direction: `Api → Infrastructure → Core`; `Core` depends on nothi
 - [x] SQLite integration test round-trips the repository and enforces the unique-username constraint (runnable without Docker).
 
 ### Phase 3: Core Business Logic & Services
-- [ ] Implement `IProductSource` and the DummyJSON typed client `DummyJsonProductSource`: `List`, `GetById`, `FindByCategory`, `SearchByName`, `Categories`.
-- [ ] Configure the typed `HttpClient` with connect/response timeouts (resilience handler).
-- [ ] Port the `fetch(...)` error-normalization: 404 on `getById` → `ProductNotFoundException`; other non-2xx / timeout / connection error → `UpstreamException`; domain exceptions propagate.
-- [ ] Port `DummyProductMapper` (upstream DTO → `Product`).
-- [ ] Port `ProductMapper` (domain → `ProductSummaryDto` with 100-char truncated description / `ProductDetailDto`).
-- [ ] Port `ProductService`: `List`, `GetById`, `Filter` (no-price vs. price path), `SearchByName`, `Categories`; preserve `offset = page * size` and the slicing bounds.
-- [ ] Port `ProductQueryCache` on **HybridCache**: one entry per normalized key via `GetOrCreateAsync`; candidate set keyed by category + price **independent of page**.
-- [ ] Preserve the `max-in-memory-candidates` bound and the over-threshold warning log.
-- [ ] Register all services in the DI container.
-- [ ] Wire Serilog (logging), the ProblemDetails handler (error handling), and shared utilities.
+- [x] Implement `IProductSource` and the DummyJSON typed client `DummyJsonProductSource`: `List`, `GetById`, `FindByCategory`, `SearchByName`, `Categories`.
+- [x] Configure the typed `HttpClient` with connect/response timeouts (`SocketsHttpHandler.ConnectTimeout` + `HttpClient.Timeout`, bound from `UpstreamOptions`).
+- [x] Port the `fetch(...)` error-normalization: 404 on `getById` → `ProductNotFoundException`; other non-2xx / timeout / connection error → `UpstreamException`; domain exceptions propagate.
+- [x] Port `DummyProductMapper` (upstream DTO → `Product`); `reviewerEmail` PII structurally dropped; price bound straight to `decimal` (no lossy `double` hop).
+- [x] Port `ProductMapper` (domain → `ProductSummaryDto` with 100-char truncated description / `ProductDetailDto`).
+- [x] Port `ProductService`: `List`, `GetById`, `Filter` (no-price vs. price path), `SearchByName`, `Categories`; preserve `offset = page * size` and the slicing bounds.
+- [x] Port `ProductQueryCache` on **HybridCache**: one entry per normalized key via `GetOrCreateAsync`; candidate set keyed by category + price **independent of page**. `IProductQueryCache` extracted so the service is unit-testable in isolation.
+- [x] Preserve the `max-in-memory-candidates` bound and the over-threshold warning log.
+- [x] Register all services in the DI container (`AddApplicationServices` in `Core`, `AddUpstreamSource` in `Infrastructure`). *(Host `UseSerilog`/pipeline invocation → Phase 4.)*
+- [ ] Wire Serilog (logging), the ProblemDetails handler (error handling), and shared utilities. *(Deferred to Phase 4 — these are Api-host/pipeline concerns; the services and exceptions they surface are complete.)*
+
+> **Status — Phase 3 complete (core services & upstream adapter).** The application layer is
+> implemented and unit/component-tested against source-parity fixtures. `DummyJsonProductSource` is a
+> public typed-client adapter (upstream DTOs + `DummyProductMapper` kept `internal` so the DummyJSON
+> shape never leaks); `ProductService`/`ProductQueryCache`/`ProductMapper` live in `Core`. Single-flight
+> is provided by **HybridCache** (`GetOrCreateAsync`), the direct analog of Spring's
+> `@Cacheable(sync = true)`. Serilog + the ProblemDetails handler are intentionally left to Phase 4,
+> where the Api host and its middleware pipeline are wired.
 
 **Acceptance Criteria**
-- [ ] Ported `ProductServiceTest`, `ProductQueryCacheTest`, `ProductMapperTest`, `PagedResponseTest`, `DummyJsonProductSourceTest` (WireMock.Net) pass.
-- [ ] Concurrency test proves single-flight: N parallel identical queries ⇒ exactly one upstream call.
-- [ ] Paging a price-filtered result triggers exactly one upstream catalog fetch regardless of page count.
-- [ ] Price-filter boundaries are inclusive and exact (`decimal`), verified at `minPrice`/`maxPrice`.
+- [x] Ported `ProductServiceTest`, `ProductQueryCacheTest`, `ProductMapperTest`, `PagedResponseTest`, `DummyJsonProductSourceTest` (WireMock.Net) pass.
+- [x] Concurrency test proves single-flight: N parallel identical queries ⇒ exactly one upstream call (`ConcurrentIdenticalSearchesShareOneUpstreamFetch`).
+- [x] Paging a price-filtered result triggers exactly one upstream catalog fetch regardless of page count (`PriceFilteredCandidatesAreCachedIndependentlyOfPage`).
+- [x] Price-filter boundaries are inclusive and exact (`decimal`), verified at `minPrice`/`maxPrice`.
 
 ### Phase 4: API Endpoints, Auth & Middleware
 - [ ] Map the six endpoints in route groups (`/api/products` list/`{id}`/`filter`/`search`/`categories`, `/api/auth/login`).
