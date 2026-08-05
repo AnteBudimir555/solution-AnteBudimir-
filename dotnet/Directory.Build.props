@@ -1,0 +1,15 @@
+<Project>
+  <!--
+    Shared build settings for the whole migration solution. Targets .NET 8 (LTS): the
+    MIGRATION_PLAN recommends .NET 10, but the available SDK is 8.0.x and the plan flags
+    .NET 8 as the supported fallback. Bumping the TargetFramework here is the only change
+    required to move to a newer runtime once its SDK is installed.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>
