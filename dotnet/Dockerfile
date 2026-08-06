@@ -7,7 +7,7 @@
 # Tests are not run here — CI runs `dotnet test`; the image build produces the
 # artifact.
 # ---------------------------------------------------------------------------
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /workspace
 
 # Project files first, so the restore layer is keyed on dependencies alone and is
@@ -28,15 +28,14 @@ RUN --mount=type=cache,target=/root/.nuget/packages \
 
 # ---------------------------------------------------------------------------
 # Runtime stage: the ASP.NET Core runtime image with only the published output.
-# (aspnet:10.0 once the plan's .NET 10 target is adopted — see Directory.Build.props.)
 # ---------------------------------------------------------------------------
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
 COPY --from=build /app/publish ./
 
-# Run unprivileged. The .NET 8 runtime images ship a non-root `app` user and
-# publish its id as APP_UID, which is the supported way to select it.
+# Run unprivileged. The runtime images ship a non-root `app` user and publish its
+# id as APP_UID, which is the supported way to select it.
 USER $APP_UID
 
 # The runtime image defaults ASPNETCORE_HTTP_PORTS to 8080; stated here so the

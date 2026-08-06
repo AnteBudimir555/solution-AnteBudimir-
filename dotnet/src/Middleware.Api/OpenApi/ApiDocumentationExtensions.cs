@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.OpenApi.Any;
-using Microsoft.OpenApi.Models;
+using System.Globalization;
+using System.Text.Json.Nodes;
+using Microsoft.OpenApi;
 using Middleware.Api.Errors;
 using Middleware.Api.Validation;
 using Middleware.Core.Dtos;
@@ -51,8 +52,9 @@ internal static class ApiDocumentationExtensions
             // Prices are decimal (Java BigDecimal). Swashbuckle's default mapping adds format "double",
             // which would tell a code generator to bind them to a binary float — the very precision loss
             // the domain model avoids. Number without a format is what springdoc publishes.
-            options.MapType<decimal>(() => new OpenApiSchema { Type = "number" });
-            options.MapType<decimal?>(() => new OpenApiSchema { Type = "number", Nullable = true });
+            options.MapType<decimal>(() => new OpenApiSchema { Type = JsonSchemaType.Number });
+            options.MapType<decimal?>(() =>
+                new OpenApiSchema { Type = JsonSchemaType.Number | JsonSchemaType.Null });
 
             options.CustomSchemaIds(SchemaId);
             options.OperationFilter<ApiContractOperationFilter>();
@@ -117,26 +119,26 @@ internal sealed class ApiContractOperationFilter : IOperationFilter
     /// </summary>
     private static readonly Dictionary<string, ParameterContract> ParameterSchemas = new(StringComparer.Ordinal)
     {
-        ["page"] = new("integer", "int32", Minimum: 0, Maximum: RequestValidators.MaxPage, Default: new OpenApiInteger(0)),
-        ["size"] = new("integer", "int32", Minimum: 1, Maximum: 100, Default: new OpenApiInteger(20)),
-        ["id"] = new("integer", "int64", Required: true),
-        ["minPrice"] = new("number", null, Minimum: 0),
-        ["maxPrice"] = new("number", null, Minimum: 0),
-        ["category"] = new("string", null, MinLength: 0, MaxLength: RequestValidators.MaxTextParam),
+        ["page"] = new(JsonSchemaType.Integer, "int32", Minimum: 0, Maximum: RequestValidators.MaxPage, Default: 0),
+        ["size"] = new(JsonSchemaType.Integer, "int32", Minimum: 1, Maximum: 100, Default: 20),
+        ["id"] = new(JsonSchemaType.Integer, "int64", Required: true),
+        ["minPrice"] = new(JsonSchemaType.Number, null, Minimum: 0),
+        ["maxPrice"] = new(JsonSchemaType.Number, null, Minimum: 0),
+        ["category"] = new(JsonSchemaType.String, null, MinLength: 0, MaxLength: RequestValidators.MaxTextParam),
         // Unlike every other query parameter, q has no default: omitting it is an error, not a default.
-        ["q"] = new("string", null, MinLength: 0, MaxLength: RequestValidators.MaxTextParam, Required: true)
+        ["q"] = new(JsonSchemaType.String, null, MinLength: 0, MaxLength: RequestValidators.MaxTextParam, Required: true)
     };
 
     /// <summary>The documented contract of one parameter: its type, its bounds and whether it is required.</summary>
     private sealed record ParameterContract(
-        string Type,
+        JsonSchemaType Type,
         string? Format,
         decimal? Minimum = null,
         decimal? Maximum = null,
         int? MinLength = null,
         int? MaxLength = null,
         bool Required = false,
-        IOpenApiAny? Default = null);
+        JsonNode? Default = null);
 
     public void Apply(OpenApiOperation operation, OperationFilterContext context)
     {
@@ -147,7 +149,7 @@ internal sealed class ApiContractOperationFilter : IOperationFilter
         // Minimal APIs bind the body as a nullable parameter so a missing one can be rejected with the
         // API's own problem body rather than the framework's; the contract still requires it, as
         // Spring's @RequestBody does.
-        if (operation.RequestBody is { } requestBody)
+        if (operation.RequestBody is OpenApiRequestBody requestBody)
         {
             requestBody.Required = true;
         }
@@ -165,36 +167,41 @@ internal sealed class ApiContractOperationFilter : IOperationFilter
             return;
         }
 
+        operation.Security ??= [];
+        // The host document is not optional here: a reference without one resolves to no name and the
+        // requirement serializes as an empty `{}`, which reads as "no authentication required".
         operation.Security.Add(new OpenApiSecurityRequirement
         {
-            [new OpenApiSecurityScheme
-            {
-                Reference = new OpenApiReference
-                {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = ApiDocumentationExtensions.BearerScheme
-                }
-            }] = []
+            [new OpenApiSecuritySchemeReference(ApiDocumentationExtensions.BearerScheme, context.Document)] = []
         });
     }
 
     private static void ApplyParameterSchemas(OpenApiOperation operation)
     {
-        foreach (var parameter in operation.Parameters ?? [])
+        // Only a concrete parameter/schema is mutable; the interfaces a document can also hold are
+        // references, which carry nothing of their own to set.
+        foreach (var parameter in (operation.Parameters ?? []).OfType<OpenApiParameter>())
         {
-            if (!ParameterSchemas.TryGetValue(parameter.Name, out var contract))
+            if (parameter.Name is not { } name || !ParameterSchemas.TryGetValue(name, out var contract))
             {
                 continue;
             }
 
             parameter.Required = contract.Required;
-            parameter.Schema.Type = contract.Type;
-            parameter.Schema.Format = contract.Format;
-            parameter.Schema.Minimum = contract.Minimum;
-            parameter.Schema.Maximum = contract.Maximum;
-            parameter.Schema.MinLength = contract.MinLength;
-            parameter.Schema.MaxLength = contract.MaxLength;
-            parameter.Schema.Default = contract.Default ?? parameter.Schema.Default;
+            if (parameter.Schema is not OpenApiSchema schema)
+            {
+                continue;
+            }
+
+            schema.Type = contract.Type;
+            schema.Format = contract.Format;
+            // Bounds are strings in this model, so an exact decimal survives into the document
+            // instead of being routed through a binary float.
+            schema.Minimum = contract.Minimum?.ToString(CultureInfo.InvariantCulture);
+            schema.Maximum = contract.Maximum?.ToString(CultureInfo.InvariantCulture);
+            schema.MinLength = contract.MinLength;
+            schema.MaxLength = contract.MaxLength;
+            schema.Default = contract.Default ?? schema.Default;
         }
     }
 
@@ -224,8 +231,9 @@ internal sealed class ApiContractOperationFilter : IOperationFilter
     }
 
     private static void AddProblemResponse(
-        OpenApiOperation operation, OpenApiSchema schema, string code, string description)
+        OpenApiOperation operation, IOpenApiSchema schema, string code, string description)
     {
+        operation.Responses ??= [];
         if (operation.Responses.ContainsKey(code))
         {
             return;
@@ -234,7 +242,10 @@ internal sealed class ApiContractOperationFilter : IOperationFilter
         operation.Responses[code] = new OpenApiResponse
         {
             Description = description,
-            Content = { [ProblemJson] = new OpenApiMediaType { Schema = schema } }
+            Content = new Dictionary<string, OpenApiMediaType>(StringComparer.Ordinal)
+            {
+                [ProblemJson] = new OpenApiMediaType { Schema = schema }
+            }
         };
     }
 }
@@ -245,17 +256,21 @@ internal sealed class ApiContractOperationFilter : IOperationFilter
 /// </summary>
 internal sealed class LoginRequestConstraintsFilter : ISchemaFilter
 {
-    public void Apply(OpenApiSchema schema, SchemaFilterContext context)
+    public void Apply(IOpenApiSchema schema, SchemaFilterContext context)
     {
-        if (context.Type != typeof(LoginRequest))
+        if (context.Type != typeof(LoginRequest) || schema is not OpenApiSchema concrete)
         {
             return;
         }
 
-        foreach (var property in schema.Properties)
+        concrete.Required ??= new HashSet<string>(StringComparer.Ordinal);
+        foreach (var property in concrete.Properties ?? new Dictionary<string, IOpenApiSchema>())
         {
-            schema.Required.Add(property.Key);
-            property.Value.MinLength = 1;
+            concrete.Required.Add(property.Key);
+            if (property.Value is OpenApiSchema field)
+            {
+                field.MinLength = 1;
+            }
         }
     }
 }
@@ -290,25 +305,35 @@ internal sealed class PublishedDescriptionsFilter : ISchemaFilter
         [(typeof(LoginResponse), "expiresInSeconds")] = "Seconds until the token expires"
     };
 
-    public void Apply(OpenApiSchema schema, SchemaFilterContext context)
+    public void Apply(IOpenApiSchema schema, SchemaFilterContext context)
     {
-        if (TypeDescriptions.TryGetValue(context.Type, out var description))
+        if (schema is not OpenApiSchema concrete)
         {
-            schema.Description = description;
+            return;
         }
 
-        foreach (var property in schema.Properties)
+        if (TypeDescriptions.TryGetValue(context.Type, out var description))
         {
+            concrete.Description = description;
+        }
+
+        foreach (var property in concrete.Properties ?? new Dictionary<string, IOpenApiSchema>())
+        {
+            if (property.Value is not OpenApiSchema field)
+            {
+                continue;
+            }
+
             if (PropertyDescriptions.TryGetValue((context.Type, property.Key), out var propertyDescription))
             {
-                property.Value.Description = propertyDescription;
+                field.Description = propertyDescription;
             }
 
             // Spring's ProblemDetail types both members as a URI; the values are one absolute and one
             // relative reference, and both are URIs.
             if (context.Type == typeof(ProblemBody) && property.Key is "type" or "instance")
             {
-                property.Value.Format = "uri";
+                field.Format = "uri";
             }
         }
     }

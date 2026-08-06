@@ -9,7 +9,7 @@
 
   <ItemGroup>
     <!-- Mints the deliberately-expired token in the auth corpus; both services must reject it. -->
-    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="7.1.2" />
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.22.0" />
   </ItemGroup>
 
 </Project>

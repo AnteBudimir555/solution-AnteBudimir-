@@ -1,17 +1,10 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
-
-  <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
-
+<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <!-- Single-flight in-memory cache (the .NET analog of Spring @Cacheable(sync = true)). -->
-    <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" Version="9.10.0" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" Version="10.8.0" />
     <!-- Options binding + IServiceCollection wiring for the application DI extension. -->
-    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="9.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.10" />
   </ItemGroup>
 
 </Project>
