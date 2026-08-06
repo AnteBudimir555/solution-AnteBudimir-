@@ -64,9 +64,15 @@ public class JwtServiceTests
     public async Task RejectsTamperedToken()
     {
         var token = Service().IssueToken("demo");
-        // Flip the final character of the signature.
-        var last = token[^1];
-        var tampered = token[..^1] + (last == 'a' ? 'b' : 'a');
+
+        // Change the first character of the signature. The Java original flips the *last* one, which
+        // is unreliable: a 32-byte HMAC base64url-encodes to 43 characters, and the final character's
+        // low two bits are padding — so for four of the 64 alphabet values the flip decodes to the very
+        // same signature bytes and the token still verifies. The first character carries six
+        // significant bits, so changing it always changes the signature.
+        var parts = token.Split('.');
+        parts[2] = (parts[2][0] == 'A' ? 'B' : 'A') + parts[2][1..];
+        var tampered = string.Join('.', parts);
 
         Assert.Null(await Service().ExtractUsernameAsync(tampered));
     }

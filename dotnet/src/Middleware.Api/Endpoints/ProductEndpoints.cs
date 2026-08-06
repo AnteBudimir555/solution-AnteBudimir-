@@ -57,7 +57,7 @@ internal static class ProductEndpoints
         var request = new ListRequest(
             QueryParsing.Int(page, "page", 0),
             QueryParsing.Int(size, "size", 20));
-        RequestValidation.EnsureValidParameters(RequestValidators.List, request);
+        RequestValidation.EnsureValidParameters(RequestValidators.List, request, "list");
 
         return service.ListAsync(request.Page, request.Size, ct);
     }
@@ -66,7 +66,7 @@ internal static class ProductEndpoints
         string id, ProductService service, CancellationToken ct)
     {
         var request = new ProductIdRequest(QueryParsing.Long(id, "id"));
-        RequestValidation.EnsureValidParameters(RequestValidators.ProductId, request);
+        RequestValidation.EnsureValidParameters(RequestValidators.ProductId, request, "getById");
 
         return service.GetByIdAsync(request.Id, ct);
     }
@@ -81,7 +81,7 @@ internal static class ProductEndpoints
             QueryParsing.Decimal(maxPrice, "maxPrice"),
             QueryParsing.Int(page, "page", 0),
             QueryParsing.Int(size, "size", 20));
-        RequestValidation.EnsureValidParameters(RequestValidators.Filter, request);
+        RequestValidation.EnsureValidParameters(RequestValidators.Filter, request, "filter");
 
         if (request.MinPrice is { } min && request.MaxPrice is { } max && min > max)
         {
@@ -104,7 +104,7 @@ internal static class ProductEndpoints
             q,
             QueryParsing.Int(page, "page", 0),
             QueryParsing.Int(size, "size", 20));
-        RequestValidation.EnsureValidParameters(RequestValidators.Search, request);
+        RequestValidation.EnsureValidParameters(RequestValidators.Search, request, "search");
 
         return service.SearchByNameAsync(request.Q, request.Page, request.Size, ct);
     }

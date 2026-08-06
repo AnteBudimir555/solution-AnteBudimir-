@@ -22,8 +22,10 @@ internal sealed record SearchRequest(string? Q, int Page, int Size);
 /// message. The messages are Hibernate Validator's defaults, because the Java service joins those
 /// exact strings into the problem <c>detail</c>; changing them would change the API contract.
 ///
-/// <para>Rule order matches the Java parameter declaration order, so multi-error details join in the
-/// same sequence.</para>
+/// <para>Rule order matches the Java parameter declaration order. Note that this is <em>not</em> the
+/// order Java joins multiple violations in: Hibernate Validator returns them from an unordered set,
+/// whose iteration order follows no rule the port could reproduce (see the shadowing report). Single
+/// violations — the overwhelming majority — match exactly.</para>
 /// </summary>
 internal static class RequestValidators
 {
@@ -109,19 +111,23 @@ internal static class RequestValidators
 /// <summary>
 /// Runs a validator and converts failures into the API's validation problem.
 ///
-/// <para>Two joins exist because the Java service produces two: parameter-level violations
-/// (<c>HandlerMethodValidationException</c>) join the constraint messages alone, while request-body
-/// violations (<c>MethodArgumentNotValidException</c>) prefix each with its field name.</para>
+/// <para>Two joins exist because the Java service produces two. Parameter-level violations reach
+/// Spring as a <c>ConstraintViolationException</c> whose property path is
+/// <c>&lt;controllerMethod&gt;.&lt;parameter&gt;</c>, so each message is prefixed with that path —
+/// hence the <c>scope</c> argument, which names the Java controller method the endpoint was ported
+/// from. Request-body violations (<c>MethodArgumentNotValidException</c>) are prefixed with the field
+/// name alone.</para>
 /// </summary>
 internal static class RequestValidation
 {
-    /// <summary>Validates query/route parameters; joins constraint messages only.</summary>
-    public static void EnsureValidParameters<T>(IValidator<T> validator, T instance)
+    /// <summary>Validates query/route parameters; joins <c>scope.parameter: message</c> triples.</summary>
+    public static void EnsureValidParameters<T>(IValidator<T> validator, T instance, string scope)
     {
         var result = validator.Validate(instance);
         if (!result.IsValid)
         {
-            throw new RequestValidationException(Join(result, error => error.ErrorMessage));
+            throw new RequestValidationException(
+                Join(result, error => $"{scope}.{Camel(error.PropertyName)}: {error.ErrorMessage}"));
         }
     }
 

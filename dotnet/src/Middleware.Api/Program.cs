@@ -3,6 +3,7 @@ using Middleware.Api.Errors;
 using Middleware.Api.Middleware;
 using Middleware.Api.OpenApi;
 using Middleware.Api.Security;
+using Middleware.Api.Serialization;
 using Middleware.Core.Services;
 using Middleware.Infrastructure.Persistence;
 using Middleware.Infrastructure.Security;
@@ -48,6 +49,11 @@ builder.Services.AddApiDocumentation(builder.Configuration);
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ProblemDetailsExceptionHandler>();
 
+// Jackson renders every Double with a decimal point ("4.0"); System.Text.Json writes "4". Same value,
+// different bytes — and a client diffing raw payloads would see it, so the responses are aligned.
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JavaDoubleConverter()));
+
 // Explicit policy rather than an implicit default: the API is a stateless, token-authenticated
 // middleware, so browsers from any origin may call it — no cookies or credentials are involved.
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
@@ -67,8 +73,15 @@ app.UseExceptionHandler();
 app.UseStatusCodePages(context =>
     ApiProblem.WriteAsync(context.HttpContext, ApiProblem.ForStatus(context.HttpContext, context.HttpContext.Response.StatusCode)));
 
+// Ahead of routing, so the matcher never gets to normalize the slash away.
+app.UseTrailingSlashRejection();
+
 // Documentation is public: served before authentication so no token is required to read it.
 app.UseApiDocumentation();
+
+// Explicit, so the method-mismatch step below can sit between route resolution and authentication.
+app.UseRouting();
+app.UsePublicPathMethodMismatch();
 
 app.UseCors();
 app.UseAuthentication();

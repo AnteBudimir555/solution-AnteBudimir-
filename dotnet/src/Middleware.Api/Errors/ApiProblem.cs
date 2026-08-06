@@ -53,8 +53,26 @@ public static class ApiProblem
     {
         var reason = ReasonPhrases.GetReasonPhrase(status);
         var title = string.IsNullOrEmpty(reason) ? "Error" : reason;
-        return Create(context, status, title, title, Slug(status));
+        return Create(context, status, title, DetailForStatus(context, status, title), Slug(status));
     }
+
+    /// <summary>
+    /// Reproduces the <c>detail</c> text Spring MVC puts on the two framework-generated failures a
+    /// client can actually trigger. Both are part of the wire contract the Java service already
+    /// publishes, so they are restated verbatim rather than re-worded.
+    ///
+    /// <para>The 404 wording is Spring's <c>NoResourceFoundException</c> message, which describes its
+    /// static-resource handler — a component this service does not have. It is kept anyway: the point
+    /// is byte compatibility with the API being replaced, not a description of how .NET routes.</para>
+    /// </summary>
+    private static string DetailForStatus(HttpContext context, int status, string fallback) => status switch
+    {
+        StatusCodes.Status404NotFound =>
+            $"No static resource {context.Request.Path.Value?.Trim('/') ?? string.Empty}.",
+        StatusCodes.Status405MethodNotAllowed =>
+            $"Method '{context.Request.Method}' is not supported.",
+        _ => fallback
+    };
 
     public static async Task WriteAsync(HttpContext context, ProblemBody problem)
     {

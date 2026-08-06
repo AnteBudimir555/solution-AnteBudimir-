@@ -38,7 +38,9 @@ public sealed class ProblemContractTests(MiddlewareApiFactory factory)
 
         AssertProblemShape(body, 400, "validation-failed");
         Assert.Equal("Validation failed", body.GetProperty("title").GetString());
-        Assert.Equal("must be greater than or equal to 0; must be greater than or equal to 1",
+        // Each message carries Spring's "<controllerMethod>.<parameter>" property path, because that is
+        // what the Java service's ConstraintViolationException joins into the detail.
+        Assert.Equal("list.page: must be greater than or equal to 0; list.size: must be greater than or equal to 1",
             body.GetProperty("detail").GetString());
     }
 
@@ -48,7 +50,7 @@ public sealed class ProblemContractTests(MiddlewareApiFactory factory)
         var body = await GetProblemAsync("/api/products/search?q=%20%20", HttpStatusCode.BadRequest);
 
         AssertProblemShape(body, 400, "validation-failed");
-        Assert.Equal("must not be blank", body.GetProperty("detail").GetString());
+        Assert.Equal("search.q: must not be blank", body.GetProperty("detail").GetString());
     }
 
     [Fact]
