@@ -24,6 +24,11 @@ internal static class Program
     {
         var options = HarnessOptions.Parse(args);
 
+        if (options.Mode is "load")
+        {
+            return await LoadTest.RunAsync(options);
+        }
+
         var shadow = options.Mode is "shadow" or "both" ? await ShadowAsync(options) : 0;
         var contract = options.Mode is "openapi" or "both" ? await OpenApiDiff.RunAsync(options) : 0;
 
@@ -221,7 +226,13 @@ internal sealed record HarnessOptions(
     string Mode,
     string JavaOpenApiPath,
     string DotnetOpenApiPath,
-    string OpenApiOutputPath)
+    string OpenApiOutputPath,
+    int LoadConcurrency,
+    int LoadRequests,
+    int JavaUpstreamPort,
+    int DotnetUpstreamPort,
+    string UpstreamOrigin,
+    string LoadOutputPath)
 {
     public static HarnessOptions Parse(string[] args)
     {
@@ -243,11 +254,19 @@ internal sealed record HarnessOptions(
             Value("secret", "dev-only-insecure-jwt-secret-please-override-in-real-environments-0123456789"),
             Value("issuer", "abysalto-middleware"),
             Value("out", "shadow-report.md"),
-            // shadow | openapi | both
+            // shadow | openapi | load | both (shadow + openapi; load needs its own service setup)
             Value("mode", "both"),
             Value("java-openapi", "/v3/api-docs"),
             Value("dotnet-openapi", "/swagger/v1/swagger.json"),
-            Value("openapi-out", "openapi-diff.md"));
+            Value("openapi-out", "openapi-diff.md"),
+            int.Parse(Value("load-concurrency", "50"), CultureInfo.InvariantCulture),
+            int.Parse(Value("load-requests", "500"), CultureInfo.InvariantCulture),
+            // Load mode only: each service must be started with its upstream base URL pointed at its
+            // own counter, which is what makes upstream calls measurable per service.
+            int.Parse(Value("java-upstream-port", "9099"), CultureInfo.InvariantCulture),
+            int.Parse(Value("dotnet-upstream-port", "9098"), CultureInfo.InvariantCulture),
+            Value("upstream-origin", "https://dummyjson.com"),
+            Value("load-out", "load-report.md"));
     }
 }
 
