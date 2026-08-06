@@ -1,13 +1,18 @@
-# One-command startup: Postgres + the middleware configured for it.
+# Startup: Postgres + the middleware configured for it.
 #
-#   cp .env.example .env      # then edit JWT_SECRET for anything real
+#   cp .env.example .env
+#   printf 'JWT_SECRET=%s\n'         "$(openssl rand -base64 48)" >> .env
+#   printf 'SEED_USER_PASSWORD=%s\n' "$(openssl rand -base64 18)" >> .env
 #   docker compose up --build
 #
-# The Postgres configuration has NO defaults for DB_USERNAME / DB_PASSWORD / JWT_SECRET: the
-# connection string is required under the Postgres provider and startup throws without it, and
-# `Jwt:Secret` is validated on start. This file mirrors that — JWT_SECRET has no fallback here
-# either, so Compose fails fast with a helpful message rather than baking a known signing key into a
-# tracked file.
+# It is three commands rather than one by design. Every value that can authenticate — the JWT
+# signing key and the seed-user password — uses `${VAR:?message}` and has no fallback, so Compose
+# stops with a readable error instead of starting a Production-profile service on credentials that
+# are readable in this repository. `.env.example` declares both keys and ships neither value.
+#
+# This mirrors what the app itself does: the connection string is required under the Postgres
+# provider, `Jwt:Secret` is validated on start, and enabling the seeder without a password now fails
+# validation on start too, so neither layer depends on the other to be safe.
 
 # Explicit, so the project name (and therefore container and volume names) does not change if the
 # checkout directory is renamed.
@@ -47,16 +52,23 @@ services:
       # Required — no fallback. Compose fails fast (like the app does) if unset, so a known signing
       # key is never committed. Provide it via `.env` (copy from `.env.example`) or the shell.
       Jwt__Secret: ${JWT_SECRET:?set JWT_SECRET in .env (copy .env.example)}
-      # Demo only: seed a known user so the JWT-protected API is testable immediately. Seeding is
-      # disabled by default and stays off unless enabled explicitly, as it is here.
+      # Seed a user so the JWT-protected API is testable immediately.
       #
-      # NOTE (open release blocker, Phase 6 B1 in MIGRATION_PLAN.md): this runs a Production-profile
-      # service with a defaulted password. The seed values want the same `:?` treatment JWT_SECRET
-      # has above, and `.env.example` needs to carry them. Left as-is here deliberately, so the
-      # security fix lands as its own reviewable change rather than inside a repository restructure.
+      # The password is required with no fallback, exactly like JWT_SECRET above. A defaulted one
+      # would publish a known-credential account on a Production-profile service — precisely what
+      # appsettings.json says must never happen. `.env.example` declares the key and ships no value,
+      # so `cp .env.example .env && docker compose up` stops here with the message below rather than
+      # starting with a password anyone can read off the repository.
+      #
+      # The username keeps a default: it is not a secret, and the account is only reachable by
+      # someone who already has the password. Requiring it would add friction, not safety.
+      #
+      # Compose interpolates `:?` unconditionally, so there is deliberately no `SEED_USER_ENABLED`
+      # switch here — it could not skip the requirement, only appear to. To run with no seeded
+      # account, override `Security__SeedUser__Enabled` in a compose override file.
       Security__SeedUser__Enabled: "true"
       Security__SeedUser__Username: ${SEED_USER_USERNAME:-demo}
-      Security__SeedUser__Password: ${SEED_USER_PASSWORD:-demo1234}
+      Security__SeedUser__Password: ${SEED_USER_PASSWORD:?set SEED_USER_PASSWORD in .env (copy .env.example) — no default, so the demo stack never ships a known password}
     ports:
       - "8080:8080"
 

@@ -42,6 +42,22 @@ public sealed class ApplicationStartupTests
     }
 
     [Theory]
+    [InlineData("demo", "")]
+    [InlineData("demo", "   ")]
+    [InlineData("", "demo1234")]
+    public void StartupFailsFastWhenSeedingIsEnabledWithoutCredentials(string username, string password)
+    {
+        // The seeder would otherwise create an account with a blank password — reachable by anyone
+        // who guesses the username. Not gated on the hosting environment: this factory hosts as
+        // Staging and seeds deliberately, and an environment gate is defeated by setting
+        // ASPNETCORE_ENVIRONMENT anyway.
+        using var factory = new MiddlewareApiFactory().WithSeedUser(username, password);
+
+        var failure = Assert.Throws<OptionsValidationException>(() => factory.CreateClient());
+        Assert.Contains(SeedUserOptions.SectionName, string.Join(" ", failure.Failures), StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData("")]
     [InlineData("too-short")]
     public void StartupFailsFastWhenTheJwtSecretIsMissingOrTooShort(string secret)

@@ -428,9 +428,9 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 
 ### Phase 6: Pre-Release Hardening — **OPEN**
 
-> **Status: in progress — the cache cluster (B2, B3, S2, S5), the SDK pin (S4) and the .NET-only
-> restructure that carried B4 with it have landed.** Remaining: **B1** (the last release blocker),
-> S1, S3, S6, S7 and §6.3.
+> **Status: in progress — all four release blockers are closed.** The cache cluster (B2, B3, S2,
+> S5), the SDK pin (S4), the .NET-only restructure that carried B4 with it, and the seed-credential
+> fix (B1) have landed. Remaining: S1, S3, S6, S7 and §6.3 — all severity High and below.
 >
 > **Verified on SDK 10.0.302** — the version the pin records and the Phase 5 parity run used,
 > installed user-local to `~/.dotnet` after S4 landed. `dotnet build -c Release` is warning-free under
@@ -461,15 +461,51 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 
 #### 6.1 Release blockers
 
-- [ ] **B1 — Remove the known-credential account from the Production compose stack.**
-  `docker-compose.dotnet.yml:48,58-60` sets `ASPNETCORE_ENVIRONMENT: Production` *and*
+- [x] **B1 — Remove the known-credential account from the Production compose stack.** *(Done — at
+  both layers, and it took `.env.example` with it.)*
+  `docker-compose.yml` set `ASPNETCORE_ENVIRONMENT: Production` *and*
   `Security__SeedUser__Enabled: "true"` *and* `SEED_USER_PASSWORD:-demo1234`. The documented
-  one-command startup therefore publishes a production-mode service on host port 8081 with
-  `demo`/`demo1234`. This contradicts the stated intent in `appsettings.json:36` — *"Disabled by
-  default so production-like configurations never create a known-credential account."* `JWT_SECRET`
-  already uses the correct `${VAR:?message}` form on the line above; apply the same to both seed
-  values, and add `SEED_USER_USERNAME` / `SEED_USER_PASSWORD` to `.env.example` (which does not
-  carry them today, so `:?` alone breaks the documented `cp .env.example .env` flow).
+  one-command startup therefore published a production-mode service with `demo`/`demo1234`,
+  contradicting the stated intent in `appsettings.json` — *"Disabled by default so production-like
+  configurations never create a known-credential account."*
+
+  **Fixed in two independent places, so neither relies on the other.**
+
+  1. *Compose.* `SEED_USER_PASSWORD` now uses the `${VAR:?message}` form `JWT_SECRET` already had.
+     The username keeps its `:-demo` default deliberately — it is not a secret, and the account is
+     only reachable by someone who already has the password, so requiring it adds friction rather
+     than safety.
+  2. *The application.* `SeedUserOptions` implements `IValidatableObject` and is registered with
+     `ValidateDataAnnotations().ValidateOnStart()`: seeding enabled with a blank username or
+     password now aborts start-up. This closes the path Compose cannot see — `docker run` with
+     `Security__SeedUser__Enabled=true` and nothing else, which previously created an account whose
+     password was the empty string.
+
+  > **Blankness is the only judgement the application can honestly make**, and the plan's
+  > "consider a startup guard" is worth recording as *rejected in the form it was proposed*. Whether
+  > a password is *known* — because it came from a committed file — is invisible from inside the
+  > process. An environment-gated guard (`!env.IsDevelopment()` ⇒ refuse) is worse than it looks: it
+  > is defeated by setting `ASPNETCORE_ENVIRONMENT=Development`, which an operator careless enough
+  > to ship `demo1234` will happily do, and it walks straight into T9. Provenance is knowable at the
+  > Compose boundary, so that is where it is enforced.
+
+  **T10 handled in the same change, and it went further than the plan expected.** `.env.example` now
+  declares `SEED_USER_PASSWORD` with **no value**, so `cp .env.example .env && docker compose up`
+  stops with a readable error instead of silently starting on a published credential. `JWT_SECRET`
+  got the same treatment, which the plan had not called for: it shipped a *working* committed
+  signing key, and whoever holds that can mint a valid token for any user and any role — strictly
+  worse than one known account. `DB_USERNAME`/`DB_PASSWORD` keep throwaway values, and the file says
+  why: the database is reachable only over the internal Compose network and a loopback-bound host
+  port, and the volume is disposable.
+
+  **The documented startup is now three commands, not one.** That is a real cost, paid knowingly:
+  the alternative is a stack whose credentials are in the repository. The README leads with the
+  `openssl rand` lines so nobody discovers the requirement by hitting the error.
+
+  Verified: `docker compose config` on a verbatim copy of `.env.example` exits 1 naming
+  `SEED_USER_PASSWORD`; filling only that one exits 1 naming `JWT_SECRET`; filling both resolves
+  with `Security__SeedUser__Password` set to the supplied value. `StartupFailsFastWhenSeedingIsEnabledWithoutCredentials`
+  covers the in-process half over blank, whitespace-only and blank-username cases.
 - [x] **B2 — Bound the price-filter cache key space.** *(Done — by a different route than proposed.)*
   `CacheKeys.FilterCandidates` keyed on the raw `decimal` bounds. `Price()` collapsed `10` and
   `10.00`, but nothing collapsed `10.01` and `10.02`. Each distinct pair missed the cache, triggered
@@ -512,9 +548,11 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
   configuration keys, the endpoint table, the auth and error contracts, the caching and push-down
   policies, and the project layout.
 
-  > Two things it states rather than hides, because a README that omits them is worse than none: the
-  > Compose stack's known B1 problem carries a warning against exposing it, and the endpoints that are
-  > *not* cached (S3) are named as such.
+  > Two things it stated rather than hid, because a README that omits them is worse than none: the
+  > Compose stack's then-open B1 problem carried a warning against exposing it, and the endpoints
+  > that are *not* cached (S3) are named as such. The B1 warning has since been replaced by the
+  > fixed instructions — the README no longer warns about it because there is nothing left to warn
+  > about. The S3 note stands.
 
 #### 6.2 Should-fix before release
 
@@ -756,16 +794,35 @@ Ordered by how quietly each one fails. **T1 is the only item here that can corru
   nothing else keys off the environment (`Program.cs:27` selects the console sink from it, and
   `ThrowOnBadRequest` was set explicitly at `:61` *because* the framework default differs by
   environment — that explicit setting is what makes the move safe).
+
+  > **Avoided rather than worked around (B1, done).** Neither escape hatch was needed: the validation
+  > added is environment-independent, so there is nothing for the factory's `Staging` to collide
+  > with. `SeededUserCanAuthenticateAgainstTheFreshlyCreatedSchema` passes untouched. That was not
+  > only convenience — an environment gate is defeated by setting `ASPNETCORE_ENVIRONMENT`, so the
+  > design that dodges the trap is also the stronger one. Worth remembering the next time a trap
+  > note asks "how do I work around this?": sometimes the answer is that the feature was wrong.
 - **T10 — Removing the `demo1234` default breaks the documented startup path.** `.env.example` carries
   `DB_USERNAME`, `DB_PASSWORD` and `JWT_SECRET` but no seed credentials, because they currently have
   compose-level defaults. Switching them to `${VAR:?…}` without adding them to `.env.example` means
   the documented `cp .env.example .env && docker compose up` fails on a fresh clone — trading a
   security bug for an onboarding bug. Both files change together.
 
+  > **Half right (B1, done).** Both files did change together, but the framing was wrong: it assumed
+  > `.env.example` should carry *values*. It carries the **keys with no values**, so `cp` alone
+  > still fails — deliberately. Writing a working seed password into a tracked file is the original
+  > bug wearing a different filename. The onboarding cost is real and was paid: the documented
+  > startup is three commands, and the README leads with the two `openssl rand` lines that produce
+  > them. The same reasoning was extended to `JWT_SECRET`, which this note did not flag and which
+  > shipped a *working* signing key — a bigger hole than the one B1 was written about.
+
 **Acceptance criteria for Phase 6**
-- [ ] No credential with a committed or defaulted value can authenticate against any non-Development
+- [x] No credential with a committed or defaulted value can authenticate against any non-Development
       configuration; verified by starting the compose stack with an empty `.env` and asserting it
-      refuses to start.
+      refuses to start. *(Done — `docker compose config` on a verbatim `.env.example` copy exits 1;
+      `StartupFailsFastWhenSeedingIsEnabledWithoutCredentials` covers the in-process path. The one
+      committed credential that remains is `DB_USERNAME`/`DB_PASSWORD`, which cannot authenticate
+      against the API and reaches only a loopback-bound disposable container — recorded as a
+      deliberate exception, not an oversight.)*
 - [ ] Cache memory is bounded by something other than the TTL, and a test drives the bound.
 - [ ] A price-filter request cannot trigger an unbounded number of distinct full-catalog fetches; a
       test asserts that N requests with varying sub-cent bounds produce ≤ M upstream calls.
@@ -821,7 +878,7 @@ and are open; they are release risks in the shipped design, not porting risks.
 
 | # | Risk | Severity | Mitigation |
 |---|---|---|---|
-| R6 | **Known-credential account reachable in a Production-configured stack.** The documented compose startup publishes `demo`/`demo1234` on host port 8081 with `ASPNETCORE_ENVIRONMENT: Production`, contradicting the intent stated in `appsettings.json`. | **HIGH** | Phase 6 B1: make both seed values required (`${VAR:?…}`) as `JWT_SECRET` already is, and add them to `.env.example` (T10). Consider a startup guard, minding T9. |
+| R6 | ~~**Known-credential account reachable in a Production-configured stack.** The documented compose startup publishes `demo`/`demo1234` with `ASPNETCORE_ENVIRONMENT: Production`, contradicting the intent stated in `appsettings.json`.~~ | ~~**HIGH**~~ **CLOSED** | Phase 6 B1, done. `SEED_USER_PASSWORD` is required via `${VAR:?…}`; `.env.example` declares it (and `JWT_SECRET`) with no value; `SeedUserOptions` fails start-up on blank credentials, so the non-Compose path is covered too. The proposed environment-gated startup guard was rejected — defeated by `ASPNETCORE_ENVIRONMENT`, and it triggers T9. |
 | R7 | **Cache-key space is attacker-controlled.** Sub-cent variation in `minPrice`/`maxPrice` produces unbounded distinct keys, each missing the cache, each triggering a full-catalog upstream fetch and retaining a full catalog copy for the TTL. Single-flight gives no protection — the keys differ by construction. | **HIGH** | Phase 6 B2 (quantize + cap) and B3 (bound the cache). Guard the fix with the T1 invariant test; the naïve version cross-contaminates responses. |
 | R8 | **Configured cache bound does not exist.** `Cache:MaximumSize` is bound, documented as the Caffeine `maximumSize=500` analog, and never read. The cache is bounded only by the 60s TTL, so the Java service's entry bound was silently dropped in the port. | **HIGH** | Phase 6 B3. Verify HybridCache sizes its L1 entries before setting `SizeLimit` (T2) — the naïve fix converts every cache write into a 500. |
 | R9 | **No upstream resilience.** No retry, circuit breaker or concurrency limit. A slow DummyJSON has every request burn the full 5s budget with nothing shedding load — the standard path from a slow dependency to a saturated thread pool. | MED-HIGH | Phase 6 S1 with `AddStandardResilienceHandler`. T3 is mandatory: the current `client.Timeout` cancels the retries before they run. |

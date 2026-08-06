@@ -101,7 +101,8 @@ header; `/api/auth/login` and the Swagger docs are public.
 ### Example session
 
 ```bash
-# 1. Log in (dev seed user) and capture the token
+# 1. Log in and capture the token. These are the Development seed credentials; under Compose the
+#    username is the same but the password is the one you generated into .env.
 TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"demo","password":"demo1234"}' | jq -r .token)
@@ -147,26 +148,40 @@ dotnet run --project src/Middleware.Api
 Builds the image and starts the app against a Postgres container.
 
 ```bash
-cp .env.example .env      # then edit JWT_SECRET for anything real
+cp .env.example .env
+printf 'JWT_SECRET=%s\n'         "$(openssl rand -base64 48)" >> .env
+printf 'SEED_USER_PASSWORD=%s\n' "$(openssl rand -base64 18)" >> .env
 docker compose up --build
 ```
 
-Compose auto-loads `.env` for `DB_USERNAME`, `DB_PASSWORD` and `JWT_SECRET`. The Postgres provider
-has **no default** connection string and `Jwt:Secret` is validated at startup, so both fail fast if
-missing — and `docker-compose.yml` mirrors that for `JWT_SECRET`, so a known signing key is never
-baked into a tracked file. The `.env.example` values are throwaway demo secrets; generate a real one
-for any real deployment (`openssl rand -base64 48`). You can also override per-invocation:
+**Three commands, not one, on purpose.** This stack runs `ASPNETCORE_ENVIRONMENT=Production` and
+publishes port 8080. Every value that can authenticate against it — the JWT signing key and the
+seed-user password — is declared in `.env.example` with **no value** and required in
+`docker-compose.yml` with `${VAR:?…}`. Copying the example alone therefore stops with a readable
+error rather than starting a production-profile service on credentials that are readable in this
+repository. Fill both in and it starts normally.
+
+Log in with `demo` and whatever password you generated (override the username with
+`SEED_USER_USERNAME`). To run with no seeded account at all, set `Security__SeedUser__Enabled` to
+`false` in a compose override file and manage users out of band — which is what a real deployment
+should do.
+
+`DB_USERNAME` / `DB_PASSWORD` do keep throwaway values in `.env.example`. They are a different
+class: the database is reachable only over the internal Compose network and a loopback-bound host
+port, it holds nothing but the demo user table, and the volume is disposable.
+
+You can also supply values per invocation instead of via `.env`:
 
 ```bash
-JWT_SECRET='a-strong-secret-at-least-32-bytes-long' docker compose up --build
+JWT_SECRET='a-strong-secret-at-least-32-bytes-long' \
+SEED_USER_PASSWORD='something-you-generated' \
+  docker compose up --build
 ```
 
-For the Compose demo, seeding is explicitly enabled so the protected API is testable immediately with
-**`demo` / `demo1234`**. In a real deployment, leave seeding off and manage users out of band.
-
-> ⚠️ The Compose stack currently runs as `ASPNETCORE_ENVIRONMENT=Production` *with* seeding enabled
-> and a defaulted password. This is a known open item (Phase 6 **B1** in `MIGRATION_PLAN.md`) — do not
-> expose this stack outside a development machine until the seed credentials are made mandatory.
+The app enforces the same rules independently of Compose, so running the image by hand is no
+weaker: `Jwt:Secret` is validated at startup, the Postgres provider has no default connection
+string, and enabling the seeder with a blank username or password fails validation on start rather
+than creating an account anyone can log into.
 
 ### 3. Postgres without Docker
 
@@ -177,10 +192,11 @@ environment variables:
 export Database__Provider='Postgres'
 export ConnectionStrings__Default='Host=localhost;Port=5432;Database=middleware;Username=middleware;Password=middleware'
 export Jwt__Secret='a-strong-secret-at-least-32-bytes-long'
-# Optional: opt into a seed user for testing
+# Optional: opt into a seed user for testing. Both values are required once Enabled is true —
+# a blank one fails validation at startup instead of creating a wide-open account.
 export Security__SeedUser__Enabled=true
 export Security__SeedUser__Username=demo
-export Security__SeedUser__Password=demo1234
+export Security__SeedUser__Password='choose-something-non-obvious'
 dotnet run --project src/Middleware.Api
 ```
 
@@ -198,9 +214,11 @@ passwords, and stateless bearer authentication.
    The response is `{ "token", "tokenType": "Bearer", "expiresInSeconds" }`.
 2. **Call protected endpoints** — send `Authorization: Bearer <token>`.
 
-**Test user:** the Development environment and the Docker Compose demo both seed
-**`demo` / `demo1234`**. Bad credentials return `401`; a missing/expired/invalid token on a protected
-endpoint returns `401`.
+**Test user:** the `Development` environment seeds **`demo` / `demo1234`** — a known credential, and
+deliberately so: it lives in `appsettings.Development.json`, which is loaded only under
+`ASPNETCORE_ENVIRONMENT=Development`. The Compose stack also seeds `demo`, but with the password
+*you* supply via `SEED_USER_PASSWORD`; it ships none. Bad credentials return `401`; a
+missing/expired/invalid token on a protected endpoint returns `401`.
 
 Validation is deliberately strict: the algorithm is pinned to HS256 (so no algorithm-confusion
 downgrade), the issuer is enforced, there is **no clock skew**, and a token whose subject no longer
@@ -232,13 +250,14 @@ Configuration binds to typed options classes. Any key can be supplied by environ
 | `Cache:ExpireAfterWriteSeconds`  | `60`                        | Entry TTL                                     |
 | `Summary:DescriptionMaxLength`   | `100`                       | `shortDescription` cap                        |
 | `Security:SeedUser:Enabled`      | `false`                     | Create the seed user on startup               |
-| `Security:SeedUser:Username`     | —                           | Seed user name                                |
-| `Security:SeedUser:Password`     | —                           | Seed user password                            |
+| `Security:SeedUser:Username`     | —                           | Seed user name (required when enabled)        |
+| `Security:SeedUser:Password`     | —                           | Seed user password (required when enabled)    |
 
 Environments:
 - **`Development`** — SQLite, seed user on (`demo`/`demo1234`), a throwaway JWT secret, readable
   console logs. See `appsettings.Development.json`.
-- **Anything else** — compact JSON logs, no default secret, seeding off unless explicitly enabled.
+- **Anything else** — compact JSON logs, no default secret, seeding off unless explicitly enabled,
+  and no way to enable it without supplying credentials.
 
 ---
 

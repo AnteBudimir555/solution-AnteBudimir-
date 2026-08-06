@@ -11,6 +11,9 @@ namespace Middleware.Infrastructure.Security;
 /// <para><see cref="JwtOptions"/> is bound with <c>ValidateOnStart</c>, which reproduces the original
 /// service's fail-fast: a missing or too-short signing secret aborts start-up instead of surfacing as
 /// a runtime failure on the first login. There is deliberately no default secret.</para>
+///
+/// <para><see cref="SeedUserOptions"/> is validated the same way, so enabling the seeder without
+/// credentials aborts start-up rather than creating an account with a blank password.</para>
 /// </summary>
 public static class SecurityServiceCollectionExtensions
 {
@@ -21,7 +24,10 @@ public static class SecurityServiceCollectionExtensions
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
-        services.Configure<SeedUserOptions>(configuration.GetSection(SeedUserOptions.SectionName));
+        services.AddOptions<SeedUserOptions>()
+            .Bind(configuration.GetSection(SeedUserOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
 
         services.AddSingleton<JwtService>();
         services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
