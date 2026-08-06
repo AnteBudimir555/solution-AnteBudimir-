@@ -41,6 +41,12 @@ public static class PersistenceServiceCollectionExtensions
         }
 
         services.AddScoped<IUserRepository, UserRepository>();
+
+        // Registered here, by the module that owns the schema, so it always starts before any hosted
+        // service that reads or writes user data — hosted services start in registration order, and
+        // persistence is wired ahead of the layers that depend on it.
+        services.AddHostedService<DatabaseInitializer>();
+
         return services;
     }
 

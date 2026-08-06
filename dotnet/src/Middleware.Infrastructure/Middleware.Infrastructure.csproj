@@ -14,6 +14,14 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.10" />
     <!-- Typed HttpClient factory for the DummyJSON upstream adapter (base address + timeouts). -->
     <PackageReference Include="Microsoft.Extensions.Http" Version="9.0.0" />
+    <!-- BCrypt password hashing: kept so hashes migrated from the Java service verify unchanged. -->
+    <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
+    <!-- HS256 issue/validate for locally-minted tokens (the jjwt replacement). -->
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="7.1.2" />
+    <!-- IHostedService for the startup schema initializer and the user seeder. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.0" />
+    <!-- ValidateDataAnnotations()/ValidateOnStart(): the JWT-secret fail-fast at start-up. -->
+    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" Version="8.0.0" />
   </ItemGroup>
 
   <PropertyGroup>
