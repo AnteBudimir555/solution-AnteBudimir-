@@ -14,10 +14,12 @@ namespace Middleware.Infrastructure.Upstream;
 /// <para>Filter/search push-down policy (documented in the README):</para>
 /// <list type="bullet">
 ///   <item>Name search and category filtering are pushed down to the upstream
-///   (<c>/products/search</c>, <c>/products/category/{slug}</c>).</item>
+///   (<c>/products/search</c>, <c>/products/category/{slug}</c>) — one or the other, never both in a
+///   single call, because DummyJSON has no endpoint that intersects them.</item>
 ///   <item>Pagination uses the upstream <c>limit</c>/<c>skip</c> parameters.</item>
-///   <item>Price-range filtering is <em>not</em> supported by DummyJSON, so it is applied in-service
-///   (see <c>ProductService</c>); this source only exposes the primitives.</item>
+///   <item>Price-range filtering is <em>not</em> supported by DummyJSON, so
+///   <see cref="SupportsPriceFilter"/> is <c>false</c> and every result reports
+///   <c>PriceFilterApplied: false</c>; the caller applies the bounds over what comes back.</item>
 /// </list>
 ///
 /// <para>Wired as a typed <see cref="HttpClient"/> whose base address, timeouts and resilience
@@ -31,12 +33,53 @@ public sealed class DummyJsonProductSource(HttpClient httpClient, ILogger<DummyJ
 {
     private static readonly ProductPage EmptyPage = new([], 0, 0, 0);
 
-    public async Task<ProductPage> ListAsync(int skip, int limit, CancellationToken ct = default)
+    /// <summary>
+    /// DummyJSON has no price parameter on any of its endpoints, so the bounds are never applied here
+    /// and the caller filters in memory. This is the whole reason
+    /// <c>ProductQueryCache</c> fetches an unfiltered candidate set for the price path.
+    /// </summary>
+    public bool SupportsPriceFilter => false;
+
+    public async Task<ProductQueryResult> QueryAsync(ProductQuery query, CancellationToken ct = default)
     {
-        logger.LogDebug("Upstream list: skip={Skip}, limit={Limit}", skip, limit);
-        var body = await FetchAsync<DummyProductList>(
-            "list products", $"products?limit={limit}&skip={skip}", notFoundId: null, ct);
-        return ToPage(body);
+        // "Everything" is null here and limit=0 on the wire — the translation is DummyJSON's own
+        // convention and stops at this line. A limit that is present must be a real page size: 0 used
+        // to mean "the entire catalog" by accident of that convention, which turned an arithmetic slip
+        // into a full download.
+        if (query.Limit is <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(query), query.Limit,
+                "Limit must be null (meaning every match) or greater than zero.");
+        }
+        var limit = query.Limit ?? 0;
+
+        var hasName = !string.IsNullOrEmpty(query.NameContains);
+        var hasCategory = !string.IsNullOrEmpty(query.Category);
+        if (hasName && hasCategory)
+        {
+            // The query object can express this; DummyJSON cannot answer it — it has a search endpoint
+            // and a category endpoint and no way to intersect them. Refusing beats picking one filter
+            // and quietly dropping the other, which would return a superset the caller believes is
+            // exact. Nothing constructs such a query today; a source that can serve it may.
+            throw new NotSupportedException(
+                "DummyJSON cannot filter by category and name in one call; issue them separately.");
+        }
+
+        var (description, uri) = (hasName, hasCategory) switch
+        {
+            (true, _) => ($"search products for {query.NameContains}",
+                $"products/search?q={Uri.EscapeDataString(query.NameContains!)}&limit={limit}&skip={query.Skip}"),
+            (_, true) => ($"filter by category {query.Category}",
+                $"products/category/{Uri.EscapeDataString(query.Category!)}?limit={limit}&skip={query.Skip}"),
+            _ => ("list products", $"products?limit={limit}&skip={query.Skip}")
+        };
+
+        logger.LogDebug("Upstream query: category={Category}, name={Name}, skip={Skip}, limit={Limit}",
+            query.Category, query.NameContains, query.Skip, query.Limit);
+
+        var body = await FetchAsync<DummyProductList>(description, uri, notFoundId: null, ct);
+        return new ProductQueryResult(ToPage(body), PriceFilterApplied: false);
     }
 
     public async Task<Product> GetByIdAsync(long id, CancellationToken ct = default)
@@ -49,26 +92,6 @@ public sealed class DummyJsonProductSource(HttpClient httpClient, ILogger<DummyJ
             throw new UpstreamException($"Upstream returned an empty body for product {id}");
         }
         return DummyProductMapper.ToDomain(body);
-    }
-
-    public async Task<ProductPage> FindByCategoryAsync(string category, int skip, int limit, CancellationToken ct = default)
-    {
-        logger.LogDebug("Upstream findByCategory: category={Category}, skip={Skip}, limit={Limit}", category, skip, limit);
-        var body = await FetchAsync<DummyProductList>(
-            $"filter by category {category}",
-            $"products/category/{Uri.EscapeDataString(category)}?limit={limit}&skip={skip}",
-            notFoundId: null, ct);
-        return ToPage(body);
-    }
-
-    public async Task<ProductPage> SearchByNameAsync(string query, int skip, int limit, CancellationToken ct = default)
-    {
-        logger.LogDebug("Upstream searchByName: q={Query}, skip={Skip}, limit={Limit}", query, skip, limit);
-        var body = await FetchAsync<DummyProductList>(
-            "search products",
-            $"products/search?q={Uri.EscapeDataString(query)}&limit={limit}&skip={skip}",
-            notFoundId: null, ct);
-        return ToPage(body);
     }
 
     public async Task<IReadOnlyList<string>> CategoriesAsync(CancellationToken ct = default)

@@ -38,13 +38,13 @@ public class ProductQueryCacheSingleFlightTests
     public async Task ConcurrentIdenticalSearchesShareOneUpstreamFetch()
     {
         var calls = 0;
-        var page = new ProductPage([], 0, 0, 20);
-        _source.SearchByNameAsync("phone", 0, 20, Arg.Any<CancellationToken>())
+        var result = new ProductQueryResult(new ProductPage([], 0, 0, 20), false);
+        _source.QueryAsync(SearchQuery, Arg.Any<CancellationToken>())
             .Returns(async _ =>
             {
                 Interlocked.Increment(ref calls);
                 await Task.Delay(100); // hold the factory open so the other callers pile up behind it
-                return page;
+                return result;
             });
 
         var tasks = Enumerable.Range(0, 25)
@@ -58,13 +58,13 @@ public class ProductQueryCacheSingleFlightTests
     [Fact]
     public async Task SecondIdenticalSearchIsServedFromCache()
     {
-        var page = new ProductPage([], 0, 0, 20);
-        _source.SearchByNameAsync("phone", 0, 20, Arg.Any<CancellationToken>()).Returns(page);
+        _source.QueryAsync(SearchQuery, Arg.Any<CancellationToken>())
+            .Returns(new ProductQueryResult(new ProductPage([], 0, 0, 20), false));
 
         await _cache.SearchAsync("phone", 0, 20);
         await _cache.SearchAsync("phone", 0, 20);
 
-        await _source.Received(1).SearchByNameAsync("phone", 0, 20, Arg.Any<CancellationToken>());
+        await _source.Received(1).QueryAsync(SearchQuery, Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -76,13 +76,21 @@ public class ProductQueryCacheSingleFlightTests
             [new Product(1, "A", null, "beauty", 10m, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null)],
             1, 0, 0);
-        _source.FindByCategoryAsync("beauty", 0, IProductSource.All, Arg.Any<CancellationToken>()).Returns(catalog);
+        _source.QueryAsync(CandidateQuery, Arg.Any<CancellationToken>())
+            .Returns(new ProductQueryResult(catalog, false));
 
-        // Two different "pages" of the same filter (same category + bounds) ...
-        await _cache.PriceFilteredCandidatesAsync("beauty", 5m, 50m);
-        await _cache.PriceFilteredCandidatesAsync("beauty", 5m, 50m);
+        // Two different pages of the same filter (same category + bounds) ...
+        await _cache.PriceFilteredPageAsync("beauty", 5m, 50m, 0, 20);
+        await _cache.PriceFilteredPageAsync("beauty", 5m, 50m, 1, 20);
 
         // ... hit the upstream exactly once.
-        await _source.Received(1).FindByCategoryAsync("beauty", 0, IProductSource.All, Arg.Any<CancellationToken>());
+        await _source.Received(1).QueryAsync(CandidateQuery, Arg.Any<CancellationToken>());
     }
+
+    private static readonly ProductQuery SearchQuery =
+        new() { NameContains = "phone", Skip = 0, Limit = 20 };
+
+    /// <summary>The unbounded, unfiltered fetch the in-memory price path issues for one category.</summary>
+    private static readonly ProductQuery CandidateQuery =
+        new() { Category = "beauty", Limit = null };
 }

@@ -17,7 +17,8 @@ namespace Middleware.UnitTests.Services;
 /// so every call is a cache miss and runs the factory: the focus is the wrapped logic — input
 /// normalization, the <c>page*size</c> offset translation, the empty-category routing and the in-memory
 /// price filter (including the null-price exclusion). Single-flight/caching behaviour itself is verified
-/// in <c>ProductQueryCacheSingleFlightTests</c>.
+/// in <c>ProductQueryCacheSingleFlightTests</c>, and the price-capable source path in
+/// <c>PriceCapableSourceTests</c>.
 /// </summary>
 public class ProductQueryCacheTests
 {
@@ -29,7 +30,14 @@ public class ProductQueryCacheTests
         var services = new ServiceCollection();
         services.AddHybridCache();
         _cache = services.BuildServiceProvider().GetRequiredService<HybridCache>();
+        // The substitute defaults to false, which is DummyJSON's answer; stated so the default that
+        // puts every test below on the in-memory path is visible rather than incidental.
+        _source.SupportsPriceFilter.Returns(false);
     }
+
+    /// <summary>The unbounded candidate fetch the in-memory price path issues.</summary>
+    private static ProductQuery CandidateQuery(string? category = null) =>
+        new() { Category = category, Limit = null };
 
     private ProductQueryCache Cache() => WithThreshold(5000);
 
@@ -37,92 +45,120 @@ public class ProductQueryCacheTests
         new(_source, _cache, Options.Create(new UpstreamOptions { MaxInMemoryCandidates = threshold }),
             Options.Create(new CacheOptions()), NullLogger<ProductQueryCache>.Instance);
 
+    private void ReturnsForCandidates(ProductQuery query, IReadOnlyList<Product> catalog) =>
+        _source.QueryAsync(query, Arg.Any<CancellationToken>())
+            .Returns(new ProductQueryResult(new ProductPage(catalog, catalog.Count, 0, 0), false));
+
     [Fact]
     public async Task SearchNormalizesQueryAndTranslatesOffset()
     {
-        var page = new ProductPage([], 0, 20, 10);
-        _source.SearchByNameAsync("phone", 20, 10, Arg.Any<CancellationToken>()).Returns(page);
+        var expected = new ProductQuery { NameContains = "phone", Skip = 20, Limit = 10 };
+        _source.QueryAsync(expected, Arg.Any<CancellationToken>())
+            .Returns(new ProductQueryResult(new ProductPage([], 0, 20, 10), false));
 
         var result = await Cache().SearchAsync("  Phone ", 2, 10);
 
         Assert.Equal(20, result.Skip);
         Assert.Equal(10, result.Limit);
-        await _source.Received(1).SearchByNameAsync("phone", 20, 10, Arg.Any<CancellationToken>());
+        await _source.Received(1).QueryAsync(expected, Arg.Any<CancellationToken>());
     }
 
     [Fact]
     public async Task CategoryPageWithBlankCategoryFallsBackToFullList()
     {
-        var page = new ProductPage([], 0, 0, 20);
-        _source.ListAsync(0, 20, Arg.Any<CancellationToken>()).Returns(page);
+        // Blank normalizes to "", which the query object spells as "no category filter" — null.
+        var expected = new ProductQuery { Category = null, Skip = 0, Limit = 20 };
+        _source.QueryAsync(expected, Arg.Any<CancellationToken>())
+            .Returns(new ProductQueryResult(new ProductPage([], 0, 0, 20), false));
 
         var result = await Cache().CategoryPageAsync("   ", 0, 20);
 
         Assert.Equal(20, result.Limit);
-        await _source.Received(1).ListAsync(0, 20, Arg.Any<CancellationToken>());
+        await _source.Received(1).QueryAsync(expected, Arg.Any<CancellationToken>());
     }
 
     [Fact]
     public async Task CategoryPageWithCategoryQueriesThatCategory()
     {
-        var page = new ProductPage([], 0, 10, 10);
-        _source.FindByCategoryAsync("beauty", 10, 10, Arg.Any<CancellationToken>()).Returns(page);
+        var expected = new ProductQuery { Category = "beauty", Skip = 10, Limit = 10 };
+        _source.QueryAsync(expected, Arg.Any<CancellationToken>())
+            .Returns(new ProductQueryResult(new ProductPage([], 0, 10, 10), false));
 
         var result = await Cache().CategoryPageAsync("Beauty", 1, 10);
 
         Assert.Equal(10, result.Skip);
-        await _source.Received(1).FindByCategoryAsync("beauty", 10, 10, Arg.Any<CancellationToken>());
+        await _source.Received(1).QueryAsync(expected, Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task PriceFilteredCandidatesKeepsOnlyPricesWithinBoundsAndDropsNullPrices()
+    public async Task PriceFilteredPageKeepsOnlyPricesWithinBoundsAndDropsNullPrices()
     {
-        var catalog = new List<Product>
-        {
+        List<Product> catalog =
+        [
             TestData.Product(1, 5m),
             TestData.Product(2, 10m),
             TestData.Product(3, 30m),
             TestData.Product(4, 50m),
             TestData.Product(5, 80m),
             TestData.Product(6, null)   // must be excluded, never throw
-        };
-        _source.ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>())
-            .Returns(new ProductPage(catalog, catalog.Count, 0, 0));
+        ];
+        ReturnsForCandidates(CandidateQuery(), catalog);
 
-        var filtered = await WithThreshold(5000).PriceFilteredCandidatesAsync(null, 10m, 50m);
+        var filtered = await WithThreshold(5000).PriceFilteredPageAsync(null, 10m, 50m, 0, 20);
 
-        Assert.Equal(new long[] { 2, 3, 4 }, filtered.Select(p => p.Id));
+        Assert.Equal(new long[] { 2, 3, 4 }, filtered.Items.Select(p => p.Id));
+        Assert.Equal(3, filtered.Total);
     }
 
     [Fact]
-    public async Task PriceFilteredCandidatesTreatsBoundsAsInclusiveAndOpenEnded()
+    public async Task PriceFilteredPageTreatsBoundsAsInclusiveAndOpenEnded()
     {
-        var catalog = new List<Product>
-        {
-            TestData.Product(1, 10m),
-            TestData.Product(2, 100m),
-            TestData.Product(3, 1000m)
-        };
-        _source.FindByCategoryAsync("beauty", 0, IProductSource.All, Arg.Any<CancellationToken>())
-            .Returns(new ProductPage(catalog, catalog.Count, 0, 0));
+        List<Product> catalog = [TestData.Product(1, 10m), TestData.Product(2, 100m), TestData.Product(3, 1000m)];
+        ReturnsForCandidates(CandidateQuery("beauty"), catalog);
 
         // Only a lower bound -> everything >= 100 (inclusive).
-        var minOnly = await WithThreshold(5000).PriceFilteredCandidatesAsync("Beauty", 100m, null);
+        var minOnly = await WithThreshold(5000).PriceFilteredPageAsync("Beauty", 100m, null, 0, 20);
 
-        Assert.Equal(new long[] { 2, 3 }, minOnly.Select(p => p.Id));
+        Assert.Equal(new long[] { 2, 3 }, minOnly.Items.Select(p => p.Id));
     }
 
     [Fact]
-    public async Task PriceFilteredCandidatesRefusesToLoadMoreThanTheInMemoryThreshold()
+    public async Task PriceFilteredPagePaginatesTheFilteredSetAndReportsTheFilteredTotal()
     {
-        var catalog = new List<Product> { TestData.Product(1, 5m), TestData.Product(2, 50m) };
-        _source.ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>())
-            .Returns(new ProductPage(catalog, catalog.Count, 0, 0));
+        // Pagination moved out of ProductService with the query reshape; the total must stay the count
+        // of everything that matched, not of the page returned, or PagedResponse reports one page.
+        List<Product> catalog = [.. Enumerable.Range(1, 10).Select(i => TestData.Product(i, i * 10m))];
+        ReturnsForCandidates(CandidateQuery(), catalog);
+
+        var secondPage = await WithThreshold(5000).PriceFilteredPageAsync(null, 20m, 90m, 1, 3);
+
+        Assert.Equal(new long[] { 5, 6, 7 }, secondPage.Items.Select(p => p.Id));
+        Assert.Equal(8, secondPage.Total);
+        Assert.Equal(3, secondPage.Skip);
+    }
+
+    [Fact]
+    public async Task PriceFilteredPagePastTheEndOfTheFilteredSetIsEmptyRatherThanThrowing()
+    {
+        List<Product> catalog = [TestData.Product(1, 5m), TestData.Product(2, 50m)];
+        ReturnsForCandidates(CandidateQuery(), catalog);
+
+        var page = await WithThreshold(5000).PriceFilteredPageAsync(null, 1m, 100m, 50, 20);
+
+        Assert.Empty(page.Items);
+        Assert.Equal(2, page.Total);
+    }
+
+    [Fact]
+    public async Task PriceFilteredPageRefusesToLoadMoreThanTheInMemoryThreshold()
+    {
+        List<Product> catalog = [TestData.Product(1, 5m), TestData.Product(2, 50m)];
+        ReturnsForCandidates(CandidateQuery(), catalog);
 
         // The threshold is a limit, not a log line: over it, the fetch is refused rather than
         // materializing an unbounded catalog on a request a client can repeat at will.
         var refused = await Assert.ThrowsAsync<UpstreamException>(
-            async () => await WithThreshold(1).PriceFilteredCandidatesAsync(null, null, 10m));
+            async () => await WithThreshold(1).PriceFilteredPageAsync(null, null, 10m, 0, 20));
 
         Assert.Contains("over the configured limit", refused.Message);
     }
@@ -136,17 +172,33 @@ public class ProductQueryCacheTests
     [Fact]
     public async Task VaryingPriceBoundsShareOneUpstreamFetch()
     {
-        var catalog = new List<Product> { TestData.Product(1, 5m), TestData.Product(2, 50m) };
-        _source.ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>())
-            .Returns(new ProductPage(catalog, catalog.Count, 0, 0));
+        List<Product> catalog = [TestData.Product(1, 5m), TestData.Product(2, 50m)];
+        ReturnsForCandidates(CandidateQuery(), catalog);
         var cache = Cache();
 
         for (int cents = 0; cents < 200; cents++)
         {
-            await cache.PriceFilteredCandidatesAsync(null, 10m + (cents * 0.01m), 50m);
+            await cache.PriceFilteredPageAsync(null, 10m + (cents * 0.01m), 50m, 0, 20);
         }
 
-        await _source.Received(1).ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>());
+        await _source.Received(1).QueryAsync(CandidateQuery(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The candidate query must carry no price bounds at all — not merely bounds the source ignores.
+    /// The key covers the category alone, so anything else the call depended on would be a value two
+    /// requests could differ in while sharing an entry.
+    /// </summary>
+    [Fact]
+    public async Task TheCandidateFetchCarriesNoPriceBounds()
+    {
+        List<Product> catalog = [TestData.Product(1, 5m)];
+        ReturnsForCandidates(CandidateQuery(), catalog);
+
+        await Cache().PriceFilteredPageAsync(null, 10m, 50m, 0, 20);
+
+        await _source.Received(1).QueryAsync(
+            Arg.Is<ProductQuery>(q => !q.HasPriceFilter && q.Limit == null), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -187,16 +239,15 @@ public class ProductQueryCacheTests
     [Fact]
     public async Task PriceBoundsStillFilterTheCachedCandidateSetPerCall()
     {
-        var catalog = new List<Product> { TestData.Product(1, 5m), TestData.Product(2, 50m) };
-        _source.ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>())
-            .Returns(new ProductPage(catalog, catalog.Count, 0, 0));
+        List<Product> catalog = [TestData.Product(1, 5m), TestData.Product(2, 50m)];
+        ReturnsForCandidates(CandidateQuery(), catalog);
         var cache = Cache();
 
         // Sharing one cached fetch must not mean sharing one answer: each call filters it afresh.
-        var cheap = await cache.PriceFilteredCandidatesAsync(null, null, 10m);
-        var dear = await cache.PriceFilteredCandidatesAsync(null, 10m, null);
+        var cheap = await cache.PriceFilteredPageAsync(null, null, 10m, 0, 20);
+        var dear = await cache.PriceFilteredPageAsync(null, 10m, null, 0, 20);
 
-        Assert.Equal(new long[] { 1 }, cheap.Select(p => p.Id));
-        Assert.Equal(new long[] { 2 }, dear.Select(p => p.Id));
+        Assert.Equal(new long[] { 1 }, cheap.Items.Select(p => p.Id));
+        Assert.Equal(new long[] { 2 }, dear.Items.Select(p => p.Id));
     }
 }

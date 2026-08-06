@@ -1,3 +1,4 @@
+using Middleware.Core.Abstractions;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -96,7 +97,8 @@ public sealed class ProductApiTests(MiddlewareApiFactory factory)
             TestData.Product(1, "Phone", "A phone", 9.99m, "smartphones"),
             TestData.Product(2, "Laptop", "A laptop", 999m, "laptops")
         ];
-        factory.Source.ListAsync(0, 20, Arg.Any<CancellationToken>()).Returns(new ProductPage(items, 2, 0, 20));
+        factory.Source.QueryAsync(new ProductQuery { Skip = 0, Limit = 20 }, Arg.Any<CancellationToken>())
+            .Returns(new ProductQueryResult(new ProductPage(items, 2, 0, 20), false));
 
         var response = await GetAuthenticatedAsync("/api/products");
 
@@ -168,7 +170,7 @@ public sealed class ProductApiTests(MiddlewareApiFactory factory)
     [Fact]
     public async Task UpstreamFailureIsReportedAs502()
     {
-        factory.Source.ListAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+        factory.Source.QueryAsync(Arg.Any<ProductQuery>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new UpstreamException("boom"));
 
         var response = await GetAuthenticatedAsync("/api/products");

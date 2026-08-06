@@ -38,42 +38,42 @@ public sealed class CachingTests(MiddlewareApiFactory factory)
     [Fact]
     public async Task RepeatedSearchHitsUpstreamOnce()
     {
-        factory.Source.SearchByNameAsync("phone", 0, 20, Arg.Any<CancellationToken>())
-            .Returns(new ProductPage([], 0, 0, 20));
+        factory.Source.QueryAsync(SearchQuery("phone", 0, 20), Arg.Any<CancellationToken>())
+            .Returns(new ProductQueryResult(new ProductPage([], 0, 0, 20), false));
 
         await InScopeAsync(q => q.SearchAsync("phone", 0, 20));
         await InScopeAsync(q => q.SearchAsync("phone", 0, 20));
 
-        await factory.Source.Received(1).SearchByNameAsync("phone", 0, 20, Arg.Any<CancellationToken>());
+        await factory.Source.Received(1).QueryAsync(SearchQuery("phone", 0, 20), Arg.Any<CancellationToken>());
     }
 
     [Fact]
     public async Task SearchInputsThatNormalizeToTheSameKeyShareOneUpstreamCall()
     {
-        factory.Source.SearchByNameAsync("phone", 0, 20, Arg.Any<CancellationToken>())
-            .Returns(new ProductPage([], 0, 0, 20));
+        factory.Source.QueryAsync(SearchQuery("phone", 0, 20), Arg.Any<CancellationToken>())
+            .Returns(new ProductQueryResult(new ProductPage([], 0, 0, 20), false));
 
         await InScopeAsync(q => q.SearchAsync("Phone", 0, 20));
         await InScopeAsync(q => q.SearchAsync("  phone  ", 0, 20));
 
-        await factory.Source.Received(1).SearchByNameAsync("phone", 0, 20, Arg.Any<CancellationToken>());
+        await factory.Source.Received(1).QueryAsync(SearchQuery("phone", 0, 20), Arg.Any<CancellationToken>());
     }
 
     [Fact]
     public async Task PriceFilterCandidateSetIsFetchedOncePerCategoryWhateverTheBounds()
     {
-        factory.Source.ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>())
-            .Returns(new ProductPage([], 0, 0, 0));
+        factory.Source.QueryAsync(CandidateQuery(), Arg.Any<CancellationToken>())
+            .Returns(new ProductQueryResult(new ProductPage([], 0, 0, 0), false));
 
-        await InScopeAsync(q => q.PriceFilteredCandidatesAsync(null, 10m, 50m));
+        await InScopeAsync(q => q.PriceFilteredPageAsync(null, 10m, 50m, 0, 20));
         // Any other range over the same category must reuse the cached candidate set. The bounds are
         // not part of the key precisely so that a client varying them cannot force a catalog fetch
         // per request — they are applied in memory over this one entry.
-        await InScopeAsync(q => q.PriceFilteredCandidatesAsync(null, 10.00m, 50.0m));
-        await InScopeAsync(q => q.PriceFilteredCandidatesAsync(null, 11.37m, 49.99m));
-        await InScopeAsync(q => q.PriceFilteredCandidatesAsync(null, null, null));
+        await InScopeAsync(q => q.PriceFilteredPageAsync(null, 10.00m, 50.0m, 0, 20));
+        await InScopeAsync(q => q.PriceFilteredPageAsync(null, 11.37m, 49.99m, 1, 20));
+        await InScopeAsync(q => q.PriceFilteredPageAsync(null, null, null, 0, 20));
 
-        await factory.Source.Received(1).ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>());
+        await factory.Source.Received(1).QueryAsync(CandidateQuery(), Arg.Any<CancellationToken>());
     }
 
     /// <summary>
@@ -85,13 +85,13 @@ public sealed class CachingTests(MiddlewareApiFactory factory)
     [Fact]
     public async Task TheListingAndAnUnfilteredFilterShareOneUpstreamCall()
     {
-        factory.Source.ListAsync(0, 20, Arg.Any<CancellationToken>())
-            .Returns(new ProductPage([], 0, 0, 20));
+        factory.Source.QueryAsync(PageQuery(null, 0, 20), Arg.Any<CancellationToken>())
+            .Returns(new ProductQueryResult(new ProductPage([], 0, 0, 20), false));
 
         await InScopeAsync(q => q.CategoryPageAsync(null, 0, 20));
         await InScopeAsync(q => q.CategoryPageAsync(null, 0, 20));
 
-        await factory.Source.Received(1).ListAsync(0, 20, Arg.Any<CancellationToken>());
+        await factory.Source.Received(1).QueryAsync(PageQuery(null, 0, 20), Arg.Any<CancellationToken>());
     }
 
     /// <summary>
@@ -129,13 +129,13 @@ public sealed class CachingTests(MiddlewareApiFactory factory)
         var products = Enumerable.Range(1, 100)
             .Select(i => TestData.Product(i, $"Product {i}", new string('d', 400), 9.99m, "beauty"))
             .ToList();
-        factory.Source.SearchByNameAsync("bulky", 0, 100, Arg.Any<CancellationToken>())
-            .Returns(new ProductPage(products, products.Count, 0, 100));
+        factory.Source.QueryAsync(SearchQuery("bulky", 0, 100), Arg.Any<CancellationToken>())
+            .Returns(new ProductQueryResult(new ProductPage(products, products.Count, 0, 100), false));
 
         await InScopeAsync(q => q.SearchAsync("bulky", 0, 100));
         await InScopeAsync(q => q.SearchAsync("bulky", 0, 100));
 
-        await factory.Source.Received(1).SearchByNameAsync("bulky", 0, 100, Arg.Any<CancellationToken>());
+        await factory.Source.Received(1).QueryAsync(SearchQuery("bulky", 0, 100), Arg.Any<CancellationToken>());
     }
 
     /// <summary>
@@ -148,4 +148,20 @@ public sealed class CachingTests(MiddlewareApiFactory factory)
         using var scope = factory.Services.CreateScope();
         return await query(scope.ServiceProvider.GetRequiredService<IProductQueryCache>());
     }
+
+    // --- the three query shapes the cache issues -----------------------------
+
+    private static ProductQuery SearchQuery(string name, int skip, int limit) =>
+        new() { NameContains = name, Skip = skip, Limit = limit };
+
+    private static ProductQuery PageQuery(string? category, int skip, int limit) =>
+        new() { Category = category, Skip = skip, Limit = limit };
+
+    /// <summary>
+    /// The unbounded, unfiltered fetch behind the in-memory price path. Written out rather than matched
+    /// loosely because the absence of the price bounds is the property under test: they must not reach
+    /// the source, or the call would depend on something the key does not.
+    /// </summary>
+    private static ProductQuery CandidateQuery(string? category = null) =>
+        new() { Category = category, Limit = null };
 }

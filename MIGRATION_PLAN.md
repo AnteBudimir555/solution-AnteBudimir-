@@ -431,13 +431,32 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 > **Status: §6.1 and §6.2 are closed.** The cache cluster (B2, B3, S2, S5), the SDK pin (S4), the
 > .NET-only restructure that carried B4 with it, the seed-credential fix (B1), the upstream resilience
 > pipeline (S1), the caching coverage gap (S3), the 401 challenge detail (S6) and the CORS allowlist
-> (S7) have landed, and §6.3 has L1, L2 and L3 closed. Remaining: **L4 only**.
+> (S7) have landed, and **§6.3 is closed** — L1, L2, L3 and L4 are all done. Every checkbox in §6.1–6.3
+> is now `[x]`; what remains open in this phase is the acceptance-criteria list below, which is stale
+> rather than unmet, and the reconciliation pass it needs.
 >
 > **Verified on SDK 10.0.302** — the version the pin records and the Phase 5 parity run used,
 > installed user-local to `~/.dotnet` after S4 landed. `dotnet build -c Release` is warning-free under
-> `TreatWarningsAsErrors`, and the suite is **183 passed, 0 failed, 0 skipped** (82 unit + 101
+> `TreatWarningsAsErrors`, and the suite is **199 passed, 0 failed, 0 skipped** (92 unit + 107
 > integration), up from the 139 baseline by the seven tests S1 adds, the six S3 adds, the five S6
-> adds, the sixteen S7 adds, the six L1 adds and the four L2 adds.
+> adds, the sixteen S7 adds, the six L1 adds, the four L2 adds and the sixteen L4 adds.
+>
+> **One caveat on that number, stated because it is not a clean pass.** `UpstreamResilienceTests` is
+> timing-fragile and fails intermittently when the whole solution is tested at once (the two test
+> assemblies then run concurrently). Reproduced: `ANotFoundIsNotRetried` asserts one upstream hit and
+> saw two, with the test taking 1 s — its `AttemptTimeoutMs` is 1000 ms against a local WireMock that
+> normally answers in single-digit milliseconds, so under load the *attempt* times out and the
+> pipeline correctly retries. The retry predicate is not wrong; the test's timing budget is.
+>
+> Measured, not assumed: **0 failing solution runs out of 9 at the previous commit, 3 out of 6 after
+> L4**, while the integration assembly run on its own is clean (`107/107`, twice) and
+> `UpstreamResilienceTests` in isolation passes every time. The failing test calls `GetByIdAsync`,
+> which L4 does not touch. So the fragility is in the fixture and the trigger is this change — L4 adds
+> five more WireMock-backed adapter tests running alongside it. Calling it purely "pre-existing" would
+> be too kind to the change; calling it a behaviour regression would be wrong. **Left unfixed
+> deliberately**: raising the fixture's attempt-timeout budget is a separate concern from an
+> abstraction reshape and should not be folded into it, but it is now the most likely thing to make CI
+> red for a reason unrelated to the commit that turns it red.
 >
 > **The Phase 6 acceptance criteria below are stale for the cache cluster.** Three of them (bounded
 > cache memory, bounded distinct fetches, the T1 invariant) are still `[ ]` although B2/B3/S2/S5 closed
@@ -856,7 +875,8 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
   clear-all: the claim was verified (`RemoveByTagAsync("*")` evicts even untagged entries) and the
   per-key list is gone. In a codebase where the comments carry this much of the reasoning, stale ones
   cost more than usual — this one had been standing in for a capability the tests actually needed.
-- [ ] **L4 — Reconsider `IProductSource`'s shape.** The boundary itself is airtight: the `Dummy*` DTOs
+- [x] **L4 — Reconsider `IProductSource`'s shape.** *(Done — and the sketch below could not have worked
+  as written; see the two notes after it.)* The boundary itself is airtight: the `Dummy*` DTOs
   are `internal`, `DummyProductMapper` is the only type naming them, and `Core` does not reference
   `Infrastructure` — a leak is a compile error, not a review catch. Two shape issues remain:
   - `IProductSource.All = 0` encodes DummyJSON's own wire convention (`limit=0` means everything) into
@@ -881,6 +901,61 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
     `ProductService` then applies the in-memory price filter only when `PriceFilterApplied` is false —
     DummyJSON keeps today's behaviour, a capable source skips the full fetch entirely, and neither the
     endpoints nor the service change again.
+
+  > **The sketch is not implementable as written: a post-hoc flag cannot drive a cache key.** This is
+  > the substantive thing L4 got wrong, and it only appears once the caching layer is in the picture.
+  > `PriceFilterApplied` is known *after* the call. `GetOrCreateAsync` needs the key *before* it. And
+  > the key is only correct if it covers exactly what the call depends on — so whether the bounds
+  > belong in the key is precisely the question that cannot wait for the answer. Keying on the bounds
+  > unconditionally re-creates R7 for DummyJSON (a full-catalog fetch per distinct pair, which B2 was
+  > raised to remove); keying without them serves one range's results for another as soon as a source
+  > *does* filter natively, which is T1 with the roles reversed.
+  >
+  > Resolved by **declaring the capability up front** — `IProductSource.SupportsPriceFilter` — and
+  > keeping `PriceFilterApplied` as the check that the declaration held. The declaration chooses the
+  > strategy and the key; the flag verifies it afterwards, and a source that declares support then
+  > returns `PriceFilterApplied: false` gets its answer refused with an `UpstreamException` rather than
+  > served. That page was paginated before filtering, so neither its items nor its total can be
+  > repaired after the fact — the same judgement S5 makes about the in-memory threshold: a wrong answer
+  > with a 200 is worse than a 502. A capability *set* (a `[Flags]` enum) was considered and rejected:
+  > one member that nothing reads is how `Cache:MaximumSize` came to be documented for months without
+  > being implemented (B3).
+  >
+  > **"Changes no consumer" was also wrong**, though less interestingly. `ProductQueryCache` is a
+  > consumer and had to change substantially, and `IProductQueryCache.PriceFilteredCandidatesAsync`
+  > became `PriceFilteredPageAsync` returning a page: under push-down there *is* no candidate set to
+  > hand back, because not fetching one is the entire point. Pagination moved out of `ProductService`
+  > with it — which strategy paginates now depends on the source, so the slicing had to move to where
+  > that is known. The endpoints and the HTTP contract are genuinely untouched.
+
+  > **What landed, beyond the sketch.**
+  > * `ProductQuery` uses `init` properties rather than the six positional parameters shown — at a call
+  >   site `new ProductQuery(null, "phone", null, null, 20, 10)` is six mysteries, and every one of
+  >   them is optional.
+  > * `All = 0` is replaced by `int? Limit`, `null` meaning every match. The sentinel was worse than
+  >   ugly: because `0` was a legitimate-looking number, **a caller that computed a page size of zero
+  >   silently downloaded the entire catalog.** Verified against the live upstream —
+  >   `products?limit=0` returns all 194 products. A non-positive limit is now rejected before any
+  >   request is made, and `ANonPositiveLimitIsRejectedRatherThanFetchingEverything` pins it.
+  > * The query object can express a category-and-name intersection DummyJSON has no endpoint for. The
+  >   adapter refuses it rather than applying one filter and dropping the other, which would return a
+  >   superset the caller believes is exact. That is a new cost of the richer shape, stated rather than
+  >   discovered later.
+  > * The push-down path is cached under a new `CacheKeys.PricePage`, which **does** carry the bounds
+  >   and is therefore client-controlled and unbounded — the shape B2 removed. It is acceptable here
+  >   only because of what puts a caller on this path: a miss costs one indexed query, not a full
+  >   catalog download, and entry count is bounded by `Cache:MaximumSizeBytes` (B3). Asserted rather
+  >   than glossed by `VaryingBoundsProduceDistinctCallsOnThePushedDownPath`, in the same spirit as
+  >   S7's `ADisallowedOriginIsStillServedByTheEndpoint`.
+  >
+  > **No source in this repository takes the push-down path**, which is the honest cost of the item: it
+  > is production code exercised only by a test fake. The alternative was an interface that can express
+  > a capability nothing acts on and nothing checks — B3's exact failure. `PriceCapableSourceTests`
+  > supplies a source that declares the capability and asserts what actually changes: the bounds and
+  > the page size reach the source, no unbounded candidate fetch is issued, the filtered total comes
+  > back from the store, identical queries share one call, scale-different bounds (`30` vs `30.00`)
+  > share one entry, `MaxInMemoryCandidates` is not consulted because nothing is materialized, and a
+  > broken capability promise is refused.
 
 #### 6.4 Subtle traps
 
@@ -1154,7 +1229,7 @@ and are open; they are release risks in the shipped design, not porting risks.
 | R8 | **Configured cache bound does not exist.** `Cache:MaximumSize` is bound, documented as the Caffeine `maximumSize=500` analog, and never read. The cache is bounded only by the 60s TTL, so the Java service's entry bound was silently dropped in the port. | **HIGH** | Phase 6 B3. Verify HybridCache sizes its L1 entries before setting `SizeLimit` (T2) — the naïve fix converts every cache write into a 500. |
 | R9 | ~~**No upstream resilience.** No retry, circuit breaker or concurrency limit. A slow DummyJSON has every request burn the full 5s budget with nothing shedding load — the standard path from a slow dependency to a saturated thread pool.~~ | ~~MED-HIGH~~ **CLOSED** | Phase 6 S1, done. `AddStandardResilienceHandler` on the typed client: 2 retries at a 200 ms exponential base, breaker at 0.5/20 over 30s, 1000-permit concurrency limit, attempt timeout 2s inside an unchanged 5s total. T3's premise did not hold — the handler sets `HttpClient.Timeout` to `InfiniteTimeSpan` itself — but the ordering hazard behind it is pinned by a test. Breaker and retry thresholds were both moved off the library defaults, which measurement showed would never have fired at this traffic level. |
 | R10 | **Cache hits pay full deserialization.** `HybridCache` bypasses serialization only for provably-immutable types; `Product`/`ProductPage` are not detected, so every hit deserializes up to 100 products with nested reviews — eroding the benefit the cache was added for. | MED | Phase 6 S2, with the collection members moved to `ImmutableArray<T>` rather than relying on nothing casting `IReadOnlyList<T>` back (T4). |
-| R11 | **Abstraction cannot express source capability.** `IProductSource` has no price parameter and uses DummyJSON's `limit=0`-means-everything convention, so a source that filters on price natively is still handed the whole catalog and filtered in memory. Extensible for *swapping* sources, not for *capability*. | MED | Phase 6 L4: replace the five fixed signatures with a `ProductQuery`/`ProductQueryResult` pair. No endpoint or service change; DummyJSON keeps today's behaviour. |
+| R11 | ~~**Abstraction cannot express source capability.** `IProductSource` has no price parameter and uses DummyJSON's `limit=0`-means-everything convention, so a source that filters on price natively is still handed the whole catalog and filtered in memory. Extensible for *swapping* sources, not for *capability*.~~ | ~~MED~~ **CLOSED** | Phase 6 L4, done. The three catalog-read signatures collapse into `QueryAsync(ProductQuery)` returning `ProductQueryResult`; `GetByIdAsync`/`CategoriesAsync` keep their own, being lookups rather than filters. `All = 0` becomes `int? Limit` — the sentinel also meant a computed page size of zero fetched the whole catalog, now rejected. The mitigation as written was insufficient: a per-result flag cannot choose a cache key, so capability is *declared* (`SupportsPriceFilter`) and the flag became the check that the declaration held. DummyJSON keeps today's behaviour; the endpoints and HTTP contract are unchanged; `ProductQueryCache` and `ProductService` were not "no change" and are the bulk of the diff. |
 
 ---
 

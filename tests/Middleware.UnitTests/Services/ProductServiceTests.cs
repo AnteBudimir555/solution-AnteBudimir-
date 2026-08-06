@@ -100,28 +100,36 @@ public class ProductServiceTests
         Assert.Empty(_source.ReceivedCalls());
     }
 
+    /// <summary>
+    /// Slicing the page out of the filtered set used to happen here. It moved into the query cache with
+    /// the <c>ProductQuery</c> reshape, because whether there is a set to slice at all now depends on
+    /// whether the source applied the filter itself — so the cases that pinned the slicing arithmetic
+    /// moved with it, to <c>ProductQueryCacheTests</c>. What is left here is the service's own job:
+    /// pass the bounds through and report what came back.
+    /// </summary>
     [Fact]
-    public async Task FilterWithPriceBoundsSlicesRequestedPageFromCandidateSet()
+    public async Task FilterWithPriceBoundsDelegatesToThePriceFilteredPage()
     {
-        var candidates = Enumerable.Range(1, 5).Select(i => TestData.Product(i, i * 10m)).ToList();
-        _queries.PriceFilteredCandidatesAsync("beauty", 10m, 50m, Arg.Any<CancellationToken>())
-            .Returns((IReadOnlyList<Product>)candidates);
+        var items = Enumerable.Range(1, 2).Select(i => TestData.Product(i, i * 10m)).ToList();
+        _queries.PriceFilteredPageAsync("beauty", 10m, 50m, 0, 2, Arg.Any<CancellationToken>())
+            .Returns(new ProductPage(items, 5, 0, 2));
 
         var page0 = await Service().FilterAsync("beauty", 10m, 50m, 0, 2);
 
         Assert.Equal(2, page0.Items.Count);
+        // The total is the filtered count reported by the page, not the number of items on it — that
+        // distinction is what makes TotalPages right.
         Assert.Equal(5, page0.TotalItems);
         Assert.Equal(3, page0.TotalPages);
+        await _queries.Received(1).PriceFilteredPageAsync("beauty", 10m, 50m, 0, 2, Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task FilterWithPriceBoundsClampsPageBeyondTheEndToEmpty()
+    public async Task FilterWithPriceBoundsReportsAnEmptyPageBeyondTheEndWithTheTotalIntact()
     {
-        var candidates = new List<Product> { TestData.Product(1, 10m), TestData.Product(2, 20m) };
-        _queries.PriceFilteredCandidatesAsync(null, 1m, null, Arg.Any<CancellationToken>())
-            .Returns((IReadOnlyList<Product>)candidates);
+        _queries.PriceFilteredPageAsync(null, 1m, null, 5, 2, Arg.Any<CancellationToken>())
+            .Returns(new ProductPage([], 2, 10, 2));
 
-        // page 5 of size 2 is well past the 2-item candidate set: no items, but total is preserved.
         var response = await Service().FilterAsync(null, 1m, null, 5, 2);
 
         Assert.Empty(response.Items);

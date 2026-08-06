@@ -52,9 +52,15 @@ public sealed class ProductQueryCache(
         return await cache.GetOrCreateAsync(
             CacheKeys.Search(query, page, size),
             (source, normalizedQuery, page, size),
-            static (state, token) =>
-                new ValueTask<ProductPage>(
-                    state.source.SearchByNameAsync(state.normalizedQuery, Offset(state.page, state.size), state.size, token)),
+            static async (state, token) =>
+                (await state.source.QueryAsync(
+                    new ProductQuery
+                    {
+                        NameContains = state.normalizedQuery,
+                        Skip = Offset(state.page, state.size),
+                        Limit = state.size
+                    },
+                    token)).Page,
             cancellationToken: ct);
     }
 
@@ -65,36 +71,111 @@ public sealed class ProductQueryCache(
         return await cache.GetOrCreateAsync(
             CacheKeys.FilterPage(category, page, size),
             (source, normalizedCategory, page, size),
-            static (state, token) =>
-            {
-                var offset = Offset(state.page, state.size);
-                var task = state.normalizedCategory.Length == 0
-                    ? state.source.ListAsync(offset, state.size, token)
-                    : state.source.FindByCategoryAsync(state.normalizedCategory, offset, state.size, token);
-                return new ValueTask<ProductPage>(task);
-            },
+            static async (state, token) =>
+                (await state.source.QueryAsync(
+                    new ProductQuery
+                    {
+                        Category = NullIfEmpty(state.normalizedCategory),
+                        Skip = Offset(state.page, state.size),
+                        Limit = state.size
+                    },
+                    token)).Page,
             cancellationToken: ct);
     }
 
     /// <summary>
-    /// The price-filtered candidate set for a filtered query (optionally scoped to a category), from
-    /// which the service slices the requested page.
+    /// One page of a price-filtered query, by whichever of the two strategies the source's declared
+    /// capability calls for.
     ///
-    /// <para>Only the <em>unfiltered</em> candidate set is cached, keyed by category alone (see
-    /// <see cref="CacheKeys.FilterCandidates"/>); the price bounds are applied per call over that
-    /// cached set. The upstream call never depended on the bounds, so keying on them bought nothing and
-    /// cost a full catalog fetch per distinct pair. Filtering a few hundred already-materialized
-    /// products per request is far cheaper than the fetch it replaces.</para>
+    /// <para>The fork is here, and not in <see cref="ProductService"/>, because it is a decision about
+    /// <em>how to ask and how to key</em>, which is this class's job. It has to be made before the
+    /// call: a cache key must cover exactly what the call depends on, so whether the bounds belong in
+    /// the key cannot be discovered from the answer.</para>
     /// </summary>
-    public async ValueTask<IReadOnlyList<Product>> PriceFilteredCandidatesAsync(
-        string? category, decimal? minPrice, decimal? maxPrice, CancellationToken ct = default)
+    public async ValueTask<ProductPage> PriceFilteredPageAsync(
+        string? category, decimal? minPrice, decimal? maxPrice, int page, int size, CancellationToken ct = default) =>
+        source.SupportsPriceFilter
+            ? await SourceFilteredPageAsync(category, minPrice, maxPrice, page, size, ct)
+            : await InMemoryFilteredPageAsync(category, minPrice, maxPrice, page, size, ct);
+
+    /// <summary>
+    /// The path DummyJSON takes: fetch the unfiltered candidate set once per category, then filter and
+    /// paginate it here.
+    ///
+    /// <para>Only the <em>unfiltered</em> set is cached, keyed by category alone (see
+    /// <see cref="CacheKeys.FilterCandidates"/>); the bounds are applied per call over it. The upstream
+    /// call never depended on the bounds, so keying on them bought nothing and cost a full catalog
+    /// fetch per distinct pair. Filtering a few hundred already-materialized products per request is
+    /// far cheaper than the fetch it replaces.</para>
+    /// </summary>
+    private async ValueTask<ProductPage> InMemoryFilteredPageAsync(
+        string? category, decimal? minPrice, decimal? maxPrice, int page, int size, CancellationToken ct)
     {
         var candidates = (await CandidatesAsync(category, ct)).Items;
 
         var filtered = candidates.Where(p => MatchesPrice(p.Price, minPrice, maxPrice)).ToList();
         logger.LogDebug("Price filter [{Min}, {Max}] on {Count} candidates -> {Matches} matches",
             minPrice, maxPrice, candidates.Count, filtered.Count);
-        return filtered;
+
+        var offset = Offset(page, size);
+        var from = Math.Min(offset, filtered.Count);
+        var to = Math.Min(from + size, filtered.Count);
+        // Frozen because ProductPage is [ImmutableObject(true)] and that promise is structural, not
+        // circumstantial (T4) — even for a page this method builds fresh and never caches.
+        return new ProductPage(
+            ImmutableArray.CreateRange(filtered.GetRange(from, to - from)), filtered.Count, offset, size);
+    }
+
+    /// <summary>
+    /// The path a price-capable source takes: one query carrying the bounds, keyed on them because the
+    /// answer depends on them, with no candidate set fetched or held at all.
+    ///
+    /// <para>No source in this repository takes it. It exists because the alternative is an interface
+    /// that can express a capability nothing ever acts on, which is how <c>Cache:MaximumSize</c> came
+    /// to be documented for months without being read (B3). <c>PriceFilterApplied</c> is what makes the
+    /// promise checkable, and it is checked below.</para>
+    /// </summary>
+    private async ValueTask<ProductPage> SourceFilteredPageAsync(
+        string? category, decimal? minPrice, decimal? maxPrice, int page, int size, CancellationToken ct)
+    {
+        var normalizedCategory = CacheKeys.NormalizeText(category);
+        return await cache.GetOrCreateAsync(
+            CacheKeys.PricePage(category, minPrice, maxPrice, page, size),
+            (self: this, normalizedCategory, minPrice, maxPrice, page, size),
+            static (state, token) => state.self.FetchSourceFilteredAsync(
+                state.normalizedCategory, state.minPrice, state.maxPrice, state.page, state.size, token),
+            cancellationToken: ct);
+    }
+
+    private async ValueTask<ProductPage> FetchSourceFilteredAsync(
+        string normalizedCategory, decimal? minPrice, decimal? maxPrice, int page, int size, CancellationToken ct)
+    {
+        var result = await source.QueryAsync(
+            new ProductQuery
+            {
+                Category = NullIfEmpty(normalizedCategory),
+                MinPrice = minPrice,
+                MaxPrice = maxPrice,
+                Skip = Offset(page, size),
+                Limit = size
+            },
+            ct);
+
+        if (!result.PriceFilterApplied)
+        {
+            // The source declared the capability and then declined to use it. The page it returned was
+            // paginated before any filtering, so neither the items nor the total can be repaired here —
+            // filtering them now would silently return a short page and an inflated count. Refusing is
+            // the same judgement S5 makes about the in-memory threshold: a wrong answer with a 200 is
+            // worse than a 502.
+            logger.LogError(
+                "Source declares SupportsPriceFilter but returned PriceFilterApplied=false for "
+                + "[{Min}, {Max}]; the page cannot be trusted.", minPrice, maxPrice);
+            throw new UpstreamException(
+                "The product source declares price-filter support but did not apply the price filter.");
+        }
+
+        return result.Page;
     }
 
     /// <summary>
@@ -116,9 +197,10 @@ public sealed class ProductQueryCache(
 
     private async ValueTask<ProductPage> FetchCandidatesAsync(string normalizedCategory, CancellationToken ct)
     {
-        var candidates = normalizedCategory.Length == 0
-            ? await source.ListAsync(0, IProductSource.All, ct)
-            : await source.FindByCategoryAsync(normalizedCategory, 0, IProductSource.All, ct);
+        // The bounds are deliberately absent from this query, not merely ignored by the source: the
+        // call must depend on exactly what the key depends on, and the key is the category alone.
+        var candidates = (await source.QueryAsync(
+            new ProductQuery { Category = NullIfEmpty(normalizedCategory), Limit = null }, ct)).Page;
 
         var candidateCount = candidates.Items.Count;
         if (candidateCount > _maxInMemoryCandidates)
@@ -161,6 +243,9 @@ public sealed class ProductQueryCache(
     }
 
     private static int Offset(int page, int size) => page * size;
+
+    /// <summary>Blank normalizes to "", which the query object spells as "no filter" — <c>null</c>.</summary>
+    private static string? NullIfEmpty(string value) => value.Length == 0 ? null : value;
 
     private static bool MatchesPrice(decimal? price, decimal? min, decimal? max)
     {

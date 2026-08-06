@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace Middleware.Core.Common;
 
 /// <summary>
@@ -42,11 +44,44 @@ public static class CacheKeys
     /// one full catalog retained, and single-flight could not help because the keys differed by
     /// construction. Keying on the category alone bounds this cache to one entry per category and makes
     /// the price bounds a pure in-memory filter over an already-cached set (see
-    /// <c>ProductQueryCache.PriceFilteredCandidatesAsync</c>), which is where they always belonged —
-    /// the upstream call never depended on them.</para>
+    /// <c>ProductQueryCache</c>'s in-memory price path), which is where they always belonged — the
+    /// upstream call never depended on them.</para>
+    ///
+    /// <para>That reasoning holds only while the source cannot filter on price itself. One that can is
+    /// asked for a filtered page directly and keyed by <see cref="PricePage"/> instead, because then
+    /// the bounds <em>do</em> change the call.</para>
     /// </summary>
     public static string FilterCandidates(string? category) =>
         "cand|" + NormalizeText(category);
+
+    /// <summary>
+    /// Key for a price-filtered page that the <em>source</em> filtered, used only when
+    /// <c>IProductSource.SupportsPriceFilter</c> is true.
+    ///
+    /// <para>This is the one key that does carry the price bounds, and it has to: when the source
+    /// applies them, the answer depends on them, and <see cref="FilterCandidates"/>'s category-only key
+    /// would serve one range's results for another — the exact cross-contamination that key shape was
+    /// designed to make impossible.</para>
+    ///
+    /// <para><strong>The cost is stated rather than hidden: this key space is client-controlled and
+    /// unbounded</strong>, since <c>minPrice=10.01, 10.02, …</c> are genuinely different questions
+    /// here. What makes that acceptable is precisely the capability that puts a caller on this path —
+    /// a miss costs one indexed query at the source, not the full-catalog download that made the same
+    /// key shape a release blocker for DummyJSON. Entry count is bounded by
+    /// <c>Cache:MaximumSizeBytes</c>, so the residual risk is cache churn rather than upstream
+    /// amplification. A source with an expensive price filter should not declare the capability.</para>
+    /// </summary>
+    public static string PricePage(string? category, decimal? minPrice, decimal? maxPrice, int page, int size) =>
+        "pricepage|" + NormalizeText(category) + "|" + Price(minPrice) + "|" + Price(maxPrice)
+        + "|" + page + "|" + size;
+
+    /// <summary>
+    /// Renders a price bound for a key: invariant, and with trailing-zero scale collapsed so that
+    /// <c>10</c> and <c>10.00</c> — equal as <c>decimal</c>s, distinct as strings — cannot become two
+    /// entries for one question. An absent bound is empty, which is distinct from <c>0</c>.
+    /// </summary>
+    private static string Price(decimal? value) =>
+        value?.ToString("0.############################", CultureInfo.InvariantCulture) ?? string.Empty;
 
     /// <summary>
     /// Key for the category list. It takes no parameters — there is exactly one such list — so it is a

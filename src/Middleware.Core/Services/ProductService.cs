@@ -47,28 +47,25 @@ public sealed class ProductService(IProductSource source, IProductQueryCache que
     }
 
     /// <summary>
-    /// Filters by category and/or price range (combinable). Category is pushed down to the source;
-    /// price range is applied in-service.
+    /// Filters by category and/or price range (combinable).
     ///
-    /// <para>When no price bound is present the source paginates directly (cached per page). When a price
-    /// bound is present the full price-filtered candidate set is fetched once (cached by category and
-    /// price bounds via <see cref="ProductQueryCache"/>, independent of pagination) and the requested
-    /// page is sliced from it here, so paging through the result never re-fetches the upstream catalog.</para>
+    /// <para>When no price bound is present the source paginates directly (cached per page). When one
+    /// is present the request goes to <see cref="IProductQueryCache.PriceFilteredPageAsync"/>, which
+    /// decides whether the source can apply the bounds itself or whether a candidate set has to be
+    /// fetched and filtered in memory — a decision about how to call and how to cache, so it belongs
+    /// there rather than here. Both return a page and a filtered total, so this method does not know
+    /// which happened.</para>
     /// </summary>
     public async Task<PagedResponse<ProductSummaryDto>> FilterAsync(
         string? category, decimal? minPrice, decimal? maxPrice, int page, int size, CancellationToken ct = default)
     {
         var hasPriceFilter = minPrice is not null || maxPrice is not null;
 
-        if (!hasPriceFilter)
-        {
-            var result = await queries.CategoryPageAsync(category, page, size, ct);
-            return ToSummaryPage(result.Items, page, size, result.Total);
-        }
+        var result = hasPriceFilter
+            ? await queries.PriceFilteredPageAsync(category, minPrice, maxPrice, page, size, ct)
+            : await queries.CategoryPageAsync(category, page, size, ct);
 
-        var filtered = await queries.PriceFilteredCandidatesAsync(category, minPrice, maxPrice, ct);
-        var pageItems = Paginate(filtered, page, size);
-        return ToSummaryPage(pageItems, page, size, filtered.Count);
+        return ToSummaryPage(result.Items, page, size, result.Total);
     }
 
     /// <summary>Free-text search by product name (pushed down to the source, cached per page).</summary>
@@ -84,15 +81,6 @@ public sealed class ProductService(IProductSource source, IProductQueryCache que
         await queries.CategoriesAsync(ct);
 
     // --- helpers -----------------------------------------------------------
-
-    private static int Offset(int page, int size) => page * size;
-
-    private static IReadOnlyList<Product> Paginate(IReadOnlyList<Product> items, int page, int size)
-    {
-        var from = Math.Min(Offset(page, size), items.Count);
-        var to = Math.Min(from + size, items.Count);
-        return items is List<Product> list ? list.GetRange(from, to - from) : items.Skip(from).Take(to - from).ToList();
-    }
 
     private PagedResponse<ProductSummaryDto> ToSummaryPage(IReadOnlyList<Product> products, int page, int size, long total)
     {

@@ -1,3 +1,4 @@
+using Middleware.Core.Abstractions;
 using System.Globalization;
 using Microsoft.Extensions.Logging.Abstractions;
 using Middleware.Core.Domain;
@@ -63,11 +64,13 @@ public sealed class DummyJsonProductSourceTests : IDisposable
     {
         StubJson("/products", ListJson(ProductJson(1, "Phone", 9.99)));
 
-        var page = await _source.ListAsync(0, 30);
+        var result = await _source.QueryAsync(new ProductQuery { Skip = 0, Limit = 30 });
 
-        Assert.Single(page.Items);
-        Assert.Equal(1, page.Total);
-        Assert.Equal("Phone", page.Items[0].Title);
+        Assert.Single(result.Page.Items);
+        Assert.Equal(1, result.Page.Total);
+        Assert.Equal("Phone", result.Page.Items[0].Title);
+        // DummyJSON has no price parameter, so every result says so.
+        Assert.False(result.PriceFilterApplied);
     }
 
     [Fact]
@@ -75,10 +78,10 @@ public sealed class DummyJsonProductSourceTests : IDisposable
     {
         StubJson("/products", """{"total":0,"skip":0,"limit":30}""");
 
-        var page = await _source.ListAsync(0, 30);
+        var result = await _source.QueryAsync(new ProductQuery { Skip = 0, Limit = 30 });
 
-        Assert.Empty(page.Items);
-        Assert.Equal(0, page.Total);
+        Assert.Empty(result.Page.Items);
+        Assert.Equal(0, result.Page.Total);
     }
 
     [Fact]
@@ -116,9 +119,9 @@ public sealed class DummyJsonProductSourceTests : IDisposable
     {
         StubJson("/products/category/smartphones", ListJson(ProductJson(1, "Phone", 9.99)));
 
-        var page = await _source.FindByCategoryAsync("smartphones", 0, 30);
+        var result = await _source.QueryAsync(new ProductQuery { Category = "smartphones", Skip = 0, Limit = 30 });
 
-        Assert.Equal(["Phone"], page.Items.Select(p => p.Title));
+        Assert.Equal(["Phone"], result.Page.Items.Select(p => p.Title));
     }
 
     [Fact]
@@ -126,9 +129,9 @@ public sealed class DummyJsonProductSourceTests : IDisposable
     {
         StubJson("/products/search", ListJson(ProductJson(1, "Phone", 9.99)));
 
-        var page = await _source.SearchByNameAsync("phone", 0, 30);
+        var result = await _source.QueryAsync(new ProductQuery { NameContains = "phone", Skip = 0, Limit = 30 });
 
-        Assert.Single(page.Items);
+        Assert.Single(result.Page.Items);
     }
 
     [Fact]
@@ -144,8 +147,93 @@ public sealed class DummyJsonProductSourceTests : IDisposable
     {
         StubStatus("/products", 503);
 
-        await Assert.ThrowsAsync<UpstreamException>(() => _source.ListAsync(0, 30));
+        await Assert.ThrowsAsync<UpstreamException>(
+            () => _source.QueryAsync(new ProductQuery { Skip = 0, Limit = 30 }));
     }
+
+    // --- routing and limit translation, which the query object moved into this adapter ---
+
+    [Fact]
+    public async Task AQueryWithNoFilterGoesToThePlainListPath()
+    {
+        StubJson("/products", ListJson(ProductJson(1, "Phone", 9.99)));
+
+        await _source.QueryAsync(new ProductQuery { Skip = 10, Limit = 30 });
+
+        var request = Assert.Single(_server.LogEntries).RequestMessage;
+        Assert.Equal("/products", request?.Path);
+        Assert.Equal("30", QueryParam(request, "limit"));
+        Assert.Equal("10", QueryParam(request, "skip"));
+    }
+
+    /// <summary>
+    /// "Everything" is null in the abstraction and limit=0 on the wire. Keeping the translation here is
+    /// the point of removing IProductSource.All: the sentinel was DummyJSON's convention, and no other
+    /// source has a reason to share it.
+    /// </summary>
+    [Fact]
+    public async Task AnAbsentLimitBecomesTheUpstreamAllConvention()
+    {
+        StubJson("/products", ListJson(ProductJson(1, "Phone", 9.99)));
+
+        await _source.QueryAsync(new ProductQuery { Limit = null });
+
+        var request = Assert.Single(_server.LogEntries).RequestMessage;
+        Assert.Equal("0", QueryParam(request, "limit"));
+    }
+
+    /// <summary>
+    /// Under the old shape this was the same request as "give me everything", because limit=0 was the
+    /// all-items sentinel. A caller that computed a page size of zero therefore downloaded the entire
+    /// catalog. It is now an error, and nothing reaches the upstream.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task ANonPositiveLimitIsRejectedRatherThanFetchingEverything(int limit)
+    {
+        StubJson("/products", ListJson(ProductJson(1, "Phone", 9.99)));
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => _source.QueryAsync(new ProductQuery { Limit = limit }));
+
+        Assert.Empty(_server.LogEntries);
+    }
+
+    /// <summary>
+    /// The query object can express an intersection DummyJSON has no endpoint for. Refusing beats
+    /// serving one filter and dropping the other, which would return a superset the caller believes is
+    /// exact.
+    /// </summary>
+    [Fact]
+    public async Task CombiningCategoryAndNameIsRefusedRatherThanSilentlyDroppingOne()
+    {
+        var refused = await Assert.ThrowsAsync<NotSupportedException>(
+            () => _source.QueryAsync(new ProductQuery { Category = "beauty", NameContains = "phone", Limit = 30 }));
+
+        Assert.Contains("category and name", refused.Message);
+        Assert.Empty(_server.LogEntries);
+    }
+
+    /// <summary>
+    /// Price bounds are accepted and ignored — DummyJSON cannot apply them — but the result says so, so
+    /// the caller knows it still has to filter.
+    /// </summary>
+    [Fact]
+    public async Task PriceBoundsAreReportedAsNotAppliedRatherThanSilentlyHonoured()
+    {
+        StubJson("/products", ListJson(ProductJson(1, "Phone", 9.99), ProductJson(2, "Laptop", 999)));
+
+        var result = await _source.QueryAsync(new ProductQuery { MinPrice = 500m, Limit = 30 });
+
+        Assert.False(_source.SupportsPriceFilter);
+        Assert.False(result.PriceFilterApplied);
+        // Both products come back: the bound was not applied anywhere.
+        Assert.Equal(2, result.Page.Items.Count);
+    }
+
+    private static string? QueryParam(WireMock.IRequestMessage? request, string name) =>
+        request?.Query is { } query && query.TryGetValue(name, out var values) ? values.FirstOrDefault() : null;
 
     public void Dispose() => _server.Dispose();
 }

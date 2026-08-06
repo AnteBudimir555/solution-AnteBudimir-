@@ -65,14 +65,19 @@ Client ─▶ ProductEndpoints ─▶ ProductService ─▶ ProductQueryCache �
 Three projects, with dependencies pointing inward (`Api → Infrastructure → Core`):
 
 - **`IProductSource`** (`src/Middleware.Core/Abstractions`) — the extension point. Returns internal
-  **domain** types (`Product`, `ProductPage`), never upstream types.
+  **domain** types (`Product`, `ProductPage`), never upstream types. Catalog reads take a
+  `ProductQuery` and return a `ProductQueryResult` saying which parts of it the source applied, so a
+  source that can filter on price natively can say so (`SupportsPriceFilter`) instead of being handed
+  the whole catalog to filter in process.
 - **`DummyJsonProductSource`** (`src/Middleware.Infrastructure/Upstream`) — the only current
   implementation. Upstream JSON is isolated in `Upstream/Dto/*` (all `internal`) and mapped to the
   domain by `DummyProductMapper`. Because `Core` does not reference `Infrastructure`, a leak of an
   upstream type into the application layer is a compile error rather than a review catch.
-- **`ProductService`** — orchestration: pagination, DTO mapping, and the in-service price filter.
+- **`ProductService`** — orchestration: assembling the response and mapping to DTOs.
 - **`ProductQueryCache`** — a separate class holding the cached queries, so the single-flight cache
-  and the pagination-independent candidate set are both honoured.
+  and the pagination-independent candidate set are both honoured. It also decides *how* to ask for a
+  price-filtered page — push the bounds down or fetch a candidate set and filter in memory — because
+  that choice determines the cache key, and the key has to be picked before the call.
 - **DTOs** — a trimmed `ProductSummaryDto` (list/filter/search) and a full `ProductDetailDto` (detail).
 
 Adding a second source means writing one class and changing one DI registration
@@ -358,6 +363,14 @@ Filters are pushed to the upstream where DummyJSON supports it, and applied in-s
 Category and price filters are **combinable**: the category is pushed down, then the price range is
 applied to the returned candidate set. If that set exceeds `Upstream:MaxInMemoryCandidates` the
 request fails with a `502` rather than materializing an unbounded catalog in memory.
+
+Name search and category filtering are pushed down **one at a time** — DummyJSON has no endpoint that
+intersects them, so a query asking for both is refused rather than answered with a superset.
+
+The last row is a property of *this* source, not of the middleware. A source that can filter on price
+in its own store declares `SupportsPriceFilter`, and is then sent the bounds and the page directly —
+no candidate set is fetched, held, or measured against `MaxInMemoryCandidates`, since that threshold
+exists to bound an in-memory materialization that no longer happens.
 
 ---
 

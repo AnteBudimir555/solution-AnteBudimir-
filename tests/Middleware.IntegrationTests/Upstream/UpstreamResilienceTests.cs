@@ -57,6 +57,9 @@ public sealed class UpstreamResilienceTests : IDisposable
         return services.BuildServiceProvider();
     }
 
+    /// <summary>A plain first-page fetch — the simplest call that reaches the resilience pipeline.</summary>
+    private static readonly ProductQuery ListQuery = new() { Skip = 0, Limit = 30 };
+
     private static IProductSource SourceFrom(ServiceProvider provider) =>
         provider.GetRequiredService<IProductSource>();
 
@@ -86,9 +89,9 @@ public sealed class UpstreamResilienceTests : IDisposable
 
         await using var provider = BuildProvider();
 
-        var page = await SourceFrom(provider).ListAsync(0, 30);
+        var result = await SourceFrom(provider).QueryAsync(ListQuery);
 
-        Assert.Equal(0, page.Total);
+        Assert.Equal(0, result.Page.Total);
         // Two upstream calls for one logical call: the retry is the point, and it is not free.
         Assert.Equal(2, Hits("/products"));
     }
@@ -100,7 +103,7 @@ public sealed class UpstreamResilienceTests : IDisposable
 
         await using var provider = BuildProvider(("Upstream:RetryAttempts", "2"));
 
-        await Assert.ThrowsAsync<UpstreamException>(() => SourceFrom(provider).ListAsync(0, 30));
+        await Assert.ThrowsAsync<UpstreamException>(() => SourceFrom(provider).QueryAsync(ListQuery));
 
         // One initial attempt plus RetryAttempts retries, and no more: the retry count is a bound,
         // not a suggestion, so a failing upstream is amplified by a known factor.
@@ -155,7 +158,7 @@ public sealed class UpstreamResilienceTests : IDisposable
             ("Upstream:CircuitBreakerSamplingDurationMs", "5000"));
 
         var started = DateTimeOffset.UtcNow;
-        await Assert.ThrowsAsync<UpstreamException>(() => SourceFrom(provider).ListAsync(0, 30));
+        await Assert.ThrowsAsync<UpstreamException>(() => SourceFrom(provider).QueryAsync(ListQuery));
         var elapsed = DateTimeOffset.UtcNow - started;
 
         Assert.Equal(3, Hits("/products"));
@@ -179,7 +182,7 @@ public sealed class UpstreamResilienceTests : IDisposable
         var hitsWhenBroken = -1;
         for (var i = 0; i < 40; i++)
         {
-            await Assert.ThrowsAsync<UpstreamException>(() => source.ListAsync(0, 30));
+            await Assert.ThrowsAsync<UpstreamException>(() => source.QueryAsync(ListQuery));
 
             var hits = Hits("/products");
             // The first request that adds no upstream call is the first one the breaker shed.
@@ -209,7 +212,7 @@ public sealed class UpstreamResilienceTests : IDisposable
             ("Upstream:AttemptTimeoutMs", "800"),
             ("Upstream:ResponseTimeoutMs", "4000"));
 
-        await Assert.ThrowsAsync<UpstreamException>(() => SourceFrom(provider).ListAsync(0, 30));
+        await Assert.ThrowsAsync<UpstreamException>(() => SourceFrom(provider).QueryAsync(ListQuery));
 
         deadServer.Dispose();
     }

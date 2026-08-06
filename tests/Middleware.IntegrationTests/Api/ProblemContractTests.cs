@@ -1,3 +1,4 @@
+using Middleware.Core.Abstractions;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -181,7 +182,7 @@ public sealed class ProblemContractTests(MiddlewareApiFactory factory)
     [Fact]
     public async Task UpstreamFailureDetailNeverLeaksTheUpstreamMessage()
     {
-        factory.Source.ListAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+        factory.Source.QueryAsync(Arg.Any<ProductQuery>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new UpstreamException("connection refused to dummyjson"));
 
         var body = await GetProblemAsync("/api/products", HttpStatusCode.BadGateway);
