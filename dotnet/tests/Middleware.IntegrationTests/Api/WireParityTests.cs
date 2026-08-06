@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using Middleware.IntegrationTests.Support;
 using NSubstitute;
@@ -103,6 +104,25 @@ public sealed class WireParityTests(MiddlewareApiFactory factory)
         Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
         var body = await ReadJsonAsync(response);
         Assert.Equal("Method 'GET' is not supported.", body.GetProperty("detail").GetString());
+    }
+
+    /// <summary>
+    /// A body the framework cannot bind is reported by the problem handler, not by the bare status.
+    /// Minimal APIs only throw on an unreadable body in Development by default, so without the
+    /// explicit setting this answers one way in dev and another in production — the divergence the
+    /// shadowing run found once the harness was pointed at the packaged image. This factory hosts
+    /// under Staging, so it exercises the non-Development path.
+    /// </summary>
+    [Fact]
+    public async Task UnreadableRequestBodyIsReportedByTheProblemHandler()
+    {
+        using var content = new StringContent("""{"username":"demo",,}""", Encoding.UTF8, "application/json");
+
+        var response = await _client.PostAsync("/api/auth/login", content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await ReadJsonAsync(response);
+        Assert.Equal("Failed to read request", body.GetProperty("detail").GetString());
     }
 
     /// <summary>

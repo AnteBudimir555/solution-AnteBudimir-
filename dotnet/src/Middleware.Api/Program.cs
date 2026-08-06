@@ -54,6 +54,12 @@ builder.Services.AddExceptionHandler<ProblemDetailsExceptionHandler>();
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JavaDoubleConverter()));
 
+// A body the framework cannot bind must surface as an exception, so the problem handler renders it
+// like every other failure. This defaults to true only in Development, which would make an unreadable
+// body answer differently in production than in dev — and differently from the Java service, whose
+// HttpMessageNotReadableException always reaches its handler.
+builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
+
 // Explicit policy rather than an implicit default: the API is a stateless, token-authenticated
 // middleware, so browsers from any origin may call it — no cookies or credentials are involved.
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
