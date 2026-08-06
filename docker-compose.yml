@@ -1,12 +1,18 @@
-# One-command startup: Postgres + the middleware running under the `postgres` profile.
+# One-command startup: Postgres + the middleware configured for it.
 #
 #   cp .env.example .env      # then edit JWT_SECRET for anything real
 #   docker compose up --build
 #
-# The postgres profile has NO defaults for DB_USERNAME / DB_PASSWORD / JWT_SECRET and fails fast at
-# startup if any is unset. This file mirrors that: values come from the auto-loaded `.env` (copy it
-# from `.env.example`), and `JWT_SECRET` has no fallback here either — Compose fails fast with a
-# helpful message if it is missing, so a known signing key is never baked into a tracked file.
+# The Postgres configuration has NO defaults for DB_USERNAME / DB_PASSWORD / JWT_SECRET: the
+# connection string is required under the Postgres provider and startup throws without it, and
+# `Jwt:Secret` is validated on start. This file mirrors that — JWT_SECRET has no fallback here
+# either, so Compose fails fast with a helpful message rather than baking a known signing key into a
+# tracked file.
+
+# Explicit, so the project name (and therefore container and volume names) does not change if the
+# checkout directory is renamed.
+name: abysalto-middleware
+
 services:
   db:
     image: postgres:17
@@ -14,9 +20,8 @@ services:
       POSTGRES_DB: middleware
       POSTGRES_USER: ${DB_USERNAME}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
-    # The app reaches the DB over the internal Compose network (db:5432); no host mapping is needed.
-    # Bind to loopback only so the demo credentials are never exposed to the host/LAN. Remove this
-    # block entirely if you do not need local psql/GUI access.
+    # The app reaches the DB over the internal Compose network (db:5432); the host mapping is for
+    # local inspection only, bound to loopback so the demo credentials are never exposed to the LAN.
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -33,18 +38,25 @@ services:
       db:
         condition: service_healthy
     environment:
-      SPRING_PROFILES_ACTIVE: postgres
-      DB_URL: jdbc:postgresql://db:5432/middleware
-      DB_USERNAME: ${DB_USERNAME}
-      DB_PASSWORD: ${DB_PASSWORD}
+      # Not Development, so the service logs compact JSON rather than the readable console pattern.
+      ASPNETCORE_ENVIRONMENT: Production
+      # Double underscore is the configuration-key separator, so these bind to the same options
+      # objects appsettings.json populates.
+      Database__Provider: Postgres
+      ConnectionStrings__Default: Host=db;Port=5432;Database=middleware;Username=${DB_USERNAME};Password=${DB_PASSWORD}
       # Required — no fallback. Compose fails fast (like the app does) if unset, so a known signing
       # key is never committed. Provide it via `.env` (copy from `.env.example`) or the shell.
-      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (copy .env.example)}
-      # Demo only: seed a known user so the JWT-protected API is testable immediately. The postgres
-      # profile keeps seeding disabled unless SEED_USER_ENABLED is explicitly set (as it is here).
-      SEED_USER_ENABLED: "true"
-      SEED_USER_USERNAME: ${SEED_USER_USERNAME:-demo}
-      SEED_USER_PASSWORD: ${SEED_USER_PASSWORD:-demo1234}
+      Jwt__Secret: ${JWT_SECRET:?set JWT_SECRET in .env (copy .env.example)}
+      # Demo only: seed a known user so the JWT-protected API is testable immediately. Seeding is
+      # disabled by default and stays off unless enabled explicitly, as it is here.
+      #
+      # NOTE (open release blocker, Phase 6 B1 in MIGRATION_PLAN.md): this runs a Production-profile
+      # service with a defaulted password. The seed values want the same `:?` treatment JWT_SECRET
+      # has above, and `.env.example` needs to carry them. Left as-is here deliberately, so the
+      # security fix lands as its own reviewable change rather than inside a repository restructure.
+      Security__SeedUser__Enabled: "true"
+      Security__SeedUser__Username: ${SEED_USER_USERNAME:-demo}
+      Security__SeedUser__Password: ${SEED_USER_PASSWORD:-demo1234}
     ports:
       - "8080:8080"
 

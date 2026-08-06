@@ -1,25 +1,19 @@
-# Build output — the image rebuilds it from source inside the build stage.
-target/
+# Build output — the image rebuilds it from source inside the build stage. Copying host artifacts in
+# would also mix a Windows-built obj/ into a Linux container and break the restore.
+**/bin/
+**/obj/
+
+# Local dev database file created by `dotnet run`.
+**/*.db
+
+# Not part of the published service.
+tests/
+
+# Local planning/reference docs, kept out of the build context.
+*.md
 
 # Local tooling / IDE / VCS metadata not needed in the build context.
-.git/
-.gitignore
-.gitattributes
-.idea/
-*.iml
+.vs/
 .vscode/
-.settings/
-.classpath
-.project
-
-# Local planning docs (kept out of the deliverable).
-HELP.md
-TASK.md
-task.md
-implementation_plan.md
-implementation_Plan.md
-
-# Docker artifacts themselves.
-Dockerfile
-.dockerignore
-docker-compose.yml
+.idea/
+.config/

@@ -1,40 +1,44 @@
 # syntax=docker/dockerfile:1
 
 # ---------------------------------------------------------------------------
-# Build stage: compile and package the executable jar.
-# JDK 25 matches the project's toolchain (Java 21 release level on JDK 25).
-# Tests are skipped here — they run in CI via `./mvnw verify`; the image build
-# just produces the artifact.
+# Build stage: restore, compile and publish the framework-dependent output.
+# Tests are not run here — CI runs `dotnet test`; the image build produces the
+# artifact.
 # ---------------------------------------------------------------------------
-FROM eclipse-temurin:25-jdk AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /workspace
 
-# Copy the Maven wrapper and POM first so dependency resolution caches in its own
-# layer and is only redone when the build config changes (not on every source edit).
-# The BuildKit cache mount persists ~/.m2 across builds independently of layer
-# invalidation, so a pom change re-fetches only what actually changed instead of
-# re-downloading every dependency from scratch.
-COPY .mvn/ .mvn/
-COPY mvnw pom.xml ./
-RUN --mount=type=cache,target=/root/.m2 chmod +x mvnw && ./mvnw -B -q dependency:go-offline
+# Project files first, so the restore layer is keyed on dependencies alone and is
+# only redone when a csproj changes — not on every source edit. The BuildKit cache
+# mount keeps the NuGet package cache across builds independently of that, so a
+# dependency change re-fetches only what actually changed.
+COPY Directory.Build.props ./
+COPY src/Middleware.Core/Middleware.Core.csproj src/Middleware.Core/
+COPY src/Middleware.Infrastructure/Middleware.Infrastructure.csproj src/Middleware.Infrastructure/
+COPY src/Middleware.Api/Middleware.Api.csproj src/Middleware.Api/
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet restore src/Middleware.Api/Middleware.Api.csproj
 
-# Copy sources and build the repackaged (fat) jar. Same cache mount so the package
-# step reuses the resolved dependencies rather than re-downloading them.
 COPY src/ src/
-RUN --mount=type=cache,target=/root/.m2 ./mvnw -B -q -DskipTests package
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet publish src/Middleware.Api/Middleware.Api.csproj \
+        --configuration Release --no-restore --output /app/publish
 
 # ---------------------------------------------------------------------------
-# Runtime stage: minimal JRE with only the packaged jar. The bytecode is at
-# release level 21, so a JRE 21 runtime is sufficient.
+# Runtime stage: the ASP.NET Core runtime image with only the published output.
 # ---------------------------------------------------------------------------
-FROM eclipse-temurin:21-jre AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
-# Run as an unprivileged user rather than root.
-RUN groupadd --system app && useradd --system --gid app --home /app app
+COPY --from=build /app/publish ./
 
-COPY --from=build /workspace/target/middleware-*.jar app.jar
-USER app
+# Run unprivileged. The runtime images ship a non-root `app` user and publish its
+# id as APP_UID, which is the supported way to select it.
+USER $APP_UID
 
+# The runtime image defaults ASPNETCORE_HTTP_PORTS to 8080; stated here so the
+# port the container listens on is visible in this file rather than inherited.
+ENV ASPNETCORE_HTTP_PORTS=8080
 EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+
+ENTRYPOINT ["dotnet", "/app/Middleware.Api.dll"]

@@ -399,10 +399,38 @@ counts: single-flight 1/1 upstream calls, warm 0/0, mixed corpus 253/253, with .
 faster than Java on the warm-path p50. (The absolute latencies are not comparable to the net8 run —
 that run had a quieter machine — and no controlled net8-vs-net10 benchmark was done.)
 
+### Repository restructure: the Java service removed
+
+The migration having landed and been verified, the repository is now .NET only.
+
+- **Deleted:** the entire `src/main/java` tree (63 files), `pom.xml`, the Maven wrapper (`mvnw`,
+  `mvnw.cmd`, `.mvn/`), the Java `Dockerfile` and `docker-compose.yml`, the Java-oriented `.gitignore`
+  / `.dockerignore` / `.gitattributes`, and Spring Boot's generated `HELP.md`.
+- **Flattened:** `dotnet/src` → `src`, `dotnet/tests` → `tests`, and the solution,
+  `Directory.Build.props`, `Dockerfile`, `.config`, `.gitignore` and `.dockerignore` up to the root.
+  `docker-compose.dotnet.yml` becomes `docker-compose.yml`. **Every `dotnet/…` path in Phases 1–5
+  above is therefore historical** — those statements were true when written and are left as the record
+  of what happened, not corrected into a fiction about where the files are now.
+- **Compose reverted to standard ports and names** (8080, 5432, project `abysalto-middleware`, volume
+  `pgdata`). The odd 8081/5433 existed solely so both stacks could run at once for shadowing. Note the
+  volume rename orphans any existing `pgdata-dotnet` volume — dev data only, but it is not migrated.
+
+> **The parity harness was deleted with it, and that is a real loss worth stating plainly.** All three
+> modes fetched from a running Java service and diffed against it (`OpenApiDiff.cs`, `LoadTest.cs`), so
+> none of them can run without one; keeping ~1,000 lines that cannot execute would have been worse.
+> But it means **the 80-case shadow corpus no longer guards anything**, and two Phase 6 traps (T5, T8)
+> lose the gate they were written around. What remains is the ported test suite: 136 tests, including
+> the RFC-7807 contract assertions and the OpenAPI document tests. Those are now the contract gate.
+> Git history retains the harness if parity ever needs re-checking against the original.
+
+Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 0 failed / 0 skipped**
+— the same numbers as before it, from the new layout.
+
 ### Phase 6: Pre-Release Hardening — **OPEN**
 
-> **Status: in progress — the cache cluster (B2, B3, S2, S5) and the SDK pin (S4) have landed.**
-> Remaining: B1, B4, S1, S3, S6, S7 and §6.3.
+> **Status: in progress — the cache cluster (B2, B3, S2, S5), the SDK pin (S4) and the .NET-only
+> restructure that carried B4 with it have landed.** Remaining: **B1** (the last release blocker),
+> S1, S3, S6, S7 and §6.3.
 >
 > **Verified on SDK 10.0.302** — the version the pin records and the Phase 5 parity run used,
 > installed user-local to `~/.dotnet` after S4 landed. `dotnet build -c Release` is warning-free under
@@ -476,13 +504,17 @@ that run had a quieter machine — and no controlled net8-vs-net10 benchmark was
   > retains nothing while throwing and logging nothing. `MaximumEntryBytes` caps a single entry so one
   > pathological response cannot evict everything else. A deliberate, documented divergence from the
   > Caffeine spec — equivalent capacity, not an equivalent number.
-- [ ] **B4 — Document the .NET service.** `grep -in "dotnet\|\.NET" README.md` returns **zero**
-  matches and no `dotnet/README.md` exists. The README describes the Java service only (JDK 21+,
-  `source/ProductSource.java`). Either add a `dotnet/README.md` mirroring the existing structure, or
-  add a .NET section to the root README covering: prerequisites (SDK 10.0.302 — see S4), run/test
-  commands, the compose stack and its env vars, the endpoint table, the error contract, and the
-  push-down policy. The task checklist scores this deliverable as documentation, and it is currently
-  a FAIL.
+- [x] **B4 — Document the .NET service.** *(Done, as part of the repository restructure below —
+  removing the Java service made the old README describe nothing that still existed.)*
+  `grep -in "dotnet\|\.NET" README.md` used to return **zero** matches: the README described the Java
+  service only (JDK 21+, `source/ProductSource.java`). It is now rewritten for this service —
+  prerequisites and the SDK pin, run/test commands for all three paths, the Compose stack and its
+  configuration keys, the endpoint table, the auth and error contracts, the caching and push-down
+  policies, and the project layout.
+
+  > Two things it states rather than hides, because a README that omits them is worse than none: the
+  > Compose stack's known B1 problem carries a warning against exposing it, and the endpoints that are
+  > *not* cached (S3) are named as such.
 
 #### 6.2 Should-fix before release
 
@@ -669,7 +701,16 @@ Ordered by how quietly each one fails. **T1 is the only item here that can corru
   attribute can vouch for and which the cache therefore keeps deserializing however immutable the
   *elements* are. Marking `Product` alone would have looked correct and changed nothing. It now caches
   the `ProductPage` record.
-- **T5 — S3 intentionally moves the load-mode numbers, and the harness gates on them.**
+- **T5 — ~~S3 intentionally moves the load-mode numbers, and the harness gates on them.~~**
+  **Obsolete: the harness was deleted with the Java service (see the restructure note above), so there
+  is no longer a parity gate to move.** This trap mattered while both services ran side by side; it is
+  kept for the record, and because its replacement question is now open — *nothing* currently catches
+  a behavioural regression against the original contract except the ported test suite. The integration
+  tests assert the RFC-7807 shapes and the OpenAPI document, which is the bulk of it, but the 80-case
+  shadow corpus is gone. Treat the OpenAPI document tests as the contract gate from here.
+
+  <details><summary>Original text</summary>
+
   `--mode load` asserts upstream-call counts (single-flight 1/1, warm 0/0, mixed corpus 253/253) and
   exits non-zero on a difference. Routing `ListAsync` through the cache *reduces* .NET's upstream
   calls below Java's — a real improvement that the harness will report as a parity failure. Update the
@@ -697,12 +738,15 @@ Ordered by how quietly each one fails. **T1 is the only item here that can corru
   needs no credentialed requests; adding it would newly enable cookie-driven CSRF against endpoints
   that have never had to consider it. Restrict origins, leave credentials off, and say why in a
   comment beside it.
-- **T8 — Fixing the surrogate split (L1) breaks parity by design.** Java's `substring` splits
-  surrogate pairs exactly as C#'s does, so the two services currently agree — including on the
-  mangled output. Correcting .NET creates a shadow-corpus divergence that is *correct*. Decide
-  explicitly: fix it and record a deliberate divergence, or leave it and record a known inherited
-  defect. Do not let it be settled by whichever choice makes the harness quieter. The same reasoning
-  applies to L2 if the lower-casing is ever changed.
+- **T8 — Fixing the surrogate split (L1) breaks parity by design.** Java's `substring` split surrogate
+  pairs exactly as C#'s does, so the two services agreed — including on the mangled output. Correcting
+  .NET would have created a shadow-corpus divergence that is *correct*, and the trap was that the
+  choice might get settled by whichever option made the harness quieter.
+
+  **The harness is gone, so the tension is gone with it — and that is the less comfortable outcome,
+  not the more.** L1 is now an ordinary bug fix with nothing arguing against it, which also means
+  nothing would have caught it had it been a regression instead. Fix it on its merits and add a unit
+  test for the surrogate boundary; the same applies to L2 if the lower-casing is ever changed.
 - **T9 — A "never seed outside Development" guard breaks the integration suite.**
   `MiddlewareApiFactory.cs:63` hosts the app as `Environments.Staging`, and `WithSeedUser(...)` turns
   the seeder on — so the obvious B1 hardening

@@ -4,9 +4,9 @@ A middleware REST API that re-exposes products from a third-party source (curren
 [DummyJSON](https://dummyjson.com)) through a clean, filterable, JWT-protected API.
 
 The service sits **in front of** the upstream product source and exposes a trimmed, cached product
-API to clients. The upstream is reached only through a `ProductSource` abstraction, so additional
+API to clients. The upstream is reached only through an `IProductSource` abstraction, so additional
 source types (other web services, a database, the file system, RSS, …) can be added later without
-touching the controllers, service, or DTOs — DummyJSON is just one concrete implementation.
+touching the endpoints, service, or DTOs — DummyJSON is just one concrete implementation.
 
 ---
 
@@ -16,9 +16,9 @@ touching the controllers, service, or DTOs — DummyJSON is just one concrete im
 - [Architecture](#architecture)
 - [Endpoints](#endpoints)
 - [Running locally](#running-locally)
-  - [Dev profile (H2, zero setup)](#1-dev-profile-h2--zero-setup)
+  - [SQLite, zero setup](#1-sqlite--zero-setup)
   - [Docker Compose (app + Postgres)](#2-docker-compose-app--postgres)
-  - [Postgres profile without Docker](#3-postgres-profile-without-docker)
+  - [Postgres without Docker](#3-postgres-without-docker)
 - [Authentication & test user](#authentication--test-user)
 - [Configuration reference](#configuration-reference)
 - [Caching / request deduplication](#caching--request-deduplication)
@@ -34,59 +34,69 @@ touching the controllers, service, or DTOs — DummyJSON is just one concrete im
 
 ## Tech stack
 
-| Concern            | Choice                                                             |
-|--------------------|--------------------------------------------------------------------|
-| Language / runtime | Java 21 (release level), built on JDK 25                           |
-| Framework          | Spring Boot 4.1.0 (Spring Web MVC, synchronous `RestClient`)       |
-| Build tool         | Maven (via the bundled `./mvnw` wrapper)                           |
-| Persistence        | Spring Data JPA / Hibernate — H2 (dev/test), PostgreSQL (Docker)   |
-| Security           | Spring Security, stateless JWT (jjwt), BCrypt password hashing     |
-| Caching            | Spring Cache backed by Caffeine                                    |
-| API docs           | springdoc-openapi (Swagger UI)                                     |
-| Logging            | SLF4J / Logback, MDC correlation id, JSON logs in the prod profile |
-| Tests              | JUnit 5, Mockito, `MockRestServiceServer`, `MockMvc`              |
+| Concern            | Choice                                                                    |
+|--------------------|---------------------------------------------------------------------------|
+| Language / runtime | C# on .NET 10 (SDK pinned by `global.json`)                               |
+| Framework          | ASP.NET Core minimal APIs                                                 |
+| Build tool         | .NET SDK (`dotnet build` / `dotnet test`)                                 |
+| Persistence        | EF Core — SQLite (local dev), PostgreSQL (Docker / production-like)       |
+| Security           | JWT bearer (`Microsoft.IdentityModel`), BCrypt password hashing           |
+| Caching            | `HybridCache` (single-flight, in-memory)                                  |
+| Validation         | FluentValidation                                                          |
+| API docs           | Swashbuckle (Swagger UI + OpenAPI document)                               |
+| Logging            | Serilog, correlation id via `LogContext`, compact JSON outside Development |
+| Tests              | xUnit, NSubstitute, WireMock.Net, Testcontainers, `WebApplicationFactory` |
 
-> **Why Maven:** the project uses the Maven wrapper (`./mvnw`), so no local Maven install is needed.
+> **Toolchain:** `global.json` pins the SDK to 10.0.302 (rolling forward within .NET 10). A machine
+> without a matching SDK gets an error naming the required version rather than an obscure build
+> failure.
 
 ---
 
 ## Architecture
 
 ```
-Client ─▶ ProductController ─▶ ProductService ─▶ ProductQueryCache ─▶ ProductSource (interface)
-                                    │                (Caffeine)              │
-                                    └─ ProductMapper (domain → DTO)          └─ DummyJsonProductSource
-                                                                                (RestClient → DummyJSON)
+Client ─▶ ProductEndpoints ─▶ ProductService ─▶ ProductQueryCache ─▶ IProductSource (interface)
+                                   │              (HybridCache)             │
+                                   └─ ProductMapper (domain → DTO)          └─ DummyJsonProductSource
+                                                                              (typed HttpClient → DummyJSON)
 ```
 
-- **`ProductSource`** (`source/ProductSource.java`) — the extension point. Returns internal **domain**
-  types (`Product`, `ProductPage`), never upstream types.
-- **`DummyJsonProductSource`** — the only current implementation. Upstream JSON is isolated in
-  `source/dummyjson/dto/*` and mapped to the domain by `DummyProductMapper`.
+Three projects, with dependencies pointing inward (`Api → Infrastructure → Core`):
+
+- **`IProductSource`** (`src/Middleware.Core/Abstractions`) — the extension point. Returns internal
+  **domain** types (`Product`, `ProductPage`), never upstream types.
+- **`DummyJsonProductSource`** (`src/Middleware.Infrastructure/Upstream`) — the only current
+  implementation. Upstream JSON is isolated in `Upstream/Dto/*` (all `internal`) and mapped to the
+  domain by `DummyProductMapper`. Because `Core` does not reference `Infrastructure`, a leak of an
+  upstream type into the application layer is a compile error rather than a review catch.
 - **`ProductService`** — orchestration: pagination, DTO mapping, and the in-service price filter.
-- **`ProductQueryCache`** — a separate bean holding the `@Cacheable` methods (so Spring's cache proxy
-  is honoured and not bypassed by self-invocation).
+- **`ProductQueryCache`** — a separate class holding the cached queries, so the single-flight cache
+  and the pagination-independent candidate set are both honoured.
 - **DTOs** — a trimmed `ProductSummaryDto` (list/filter/search) and a full `ProductDetailDto` (detail).
+
+Adding a second source means writing one class and changing one DI registration
+(`AddUpstreamSource` in `Program.cs`); no endpoint or service changes.
 
 ---
 
 ## Endpoints
 
-All responses are JSON. Every `/api/products/**` endpoint requires a `Authorization: Bearer <token>`
+All responses are JSON. Every `/api/products/**` endpoint requires an `Authorization: Bearer <token>`
 header; `/api/auth/login` and the Swagger docs are public.
 
-| Method | Path                       | Description                                             | Auth |
-|--------|----------------------------|---------------------------------------------------------|:----:|
-| POST   | `/api/auth/login`          | Exchange username/password for a JWT                    |  —   |
-| GET    | `/api/products`            | Paged, trimmed product list                             |  ✔   |
-| GET    | `/api/products/{id}`       | Full detail of a single product                         |  ✔   |
-| GET    | `/api/products/filter`     | Filter by `category` and/or `minPrice`/`maxPrice`       |  ✔   |
-| GET    | `/api/products/search`     | Free-text search by product name (`q`)                  |  ✔   |
-| GET    | `/api/products/categories` | Available category identifiers                          |  ✔   |
+| Method | Path                       | Description                                        | Auth |
+|--------|----------------------------|----------------------------------------------------|:----:|
+| POST   | `/api/auth/login`          | Exchange username/password for a JWT               |  —   |
+| GET    | `/api/products`            | Paged, trimmed product list                        |  ✔   |
+| GET    | `/api/products/{id}`       | Full detail of a single product                    |  ✔   |
+| GET    | `/api/products/filter`     | Filter by `category` and/or `minPrice`/`maxPrice`  |  ✔   |
+| GET    | `/api/products/search`     | Free-text search by product name (`q`)             |  ✔   |
+| GET    | `/api/products/categories` | Available category identifiers                     |  ✔   |
 
-**Common query params** (list/filter/search): `page` (0-based, default `0`), `size` (1–100, default `20`).
-The trimmed shape is `{ image, name, price, shortDescription }` where `shortDescription` is hard-capped
-at 100 characters on a word boundary.
+**Common query params** (list/filter/search): `page` (0-based, default `0`, max `10000`), `size`
+(1–100, default `20`). The trimmed shape is `{ image, name, price, shortDescription }` where
+`shortDescription` is hard-capped at 100 characters on a word boundary.
 
 ### Example session
 
@@ -115,130 +125,146 @@ curl -s "http://localhost:8080/api/products/search?q=phone" -H "Authorization: B
 
 ## Running locally
 
-**Prerequisites:** JDK 21+ (JDK 25 recommended to match the toolchain). Docker is only needed for the
-Compose path. The Maven wrapper (`./mvnw` / `mvnw.cmd`) handles Maven itself.
+**Prerequisites:** the .NET 10 SDK (see `global.json`). Docker is needed only for the Compose path
+and for the one Testcontainers-backed test, which skips itself when Docker is absent.
 
-### 1. Dev profile (H2, zero setup)
+### 1. SQLite — zero setup
 
-The default profile. Embedded in-memory H2, an enabled H2 console, and a pre-seeded `demo` user — no
-external services or configuration required.
+The default. A self-contained SQLite file, and — under the `Development` environment only — a
+pre-seeded `demo` user. No external services or configuration required.
 
 ```bash
-./mvnw spring-boot:run
+dotnet run --project src/Middleware.Api
 ```
 
-- App: `http://localhost:8080`
-- Swagger UI: `http://localhost:8080/swagger-ui.html`
-- H2 console: `http://localhost:8080/h2-console` (JDBC URL `jdbc:h2:mem:middleware`, user `sa`, no password)
+- App: `http://localhost:8080` (or whatever `ASPNETCORE_URLS` / launch settings select)
+- Swagger UI: `http://localhost:8080/swagger`
+- Database: `middleware-dev.db` in the working directory (gitignored, created on first run)
 - Seed user: **`demo` / `demo1234`**
 
 ### 2. Docker Compose (app + Postgres)
 
-Builds the image and starts the app under the `postgres` profile against a Postgres container.
+Builds the image and starts the app against a Postgres container.
 
 ```bash
 cp .env.example .env      # then edit JWT_SECRET for anything real
 docker compose up --build
 ```
 
-Compose auto-loads `.env` (copied from the committed `.env.example`) for `DB_USERNAME`,
-`DB_PASSWORD`, and `JWT_SECRET`. The `postgres` profile has **no defaults** for these and fails fast
-if any is missing — and `docker-compose.yml` mirrors that for `JWT_SECRET`, so a known signing key is
-never baked into a tracked file. The `.env.example` values are throwaway demo secrets; generate a
-real one for any real deployment (`openssl rand -base64 48`). You can also override per-invocation
-from the shell:
+Compose auto-loads `.env` for `DB_USERNAME`, `DB_PASSWORD` and `JWT_SECRET`. The Postgres provider
+has **no default** connection string and `Jwt:Secret` is validated at startup, so both fail fast if
+missing — and `docker-compose.yml` mirrors that for `JWT_SECRET`, so a known signing key is never
+baked into a tracked file. The `.env.example` values are throwaway demo secrets; generate a real one
+for any real deployment (`openssl rand -base64 48`). You can also override per-invocation:
 
 ```bash
 JWT_SECRET='a-strong-secret-at-least-32-bytes-long' docker compose up --build
 ```
 
-For the Compose demo, seeding is explicitly enabled (`SEED_USER_ENABLED=true`) so the protected API is
-testable immediately with **`demo` / `demo1234`**. In a real deployment, leave seeding off and manage
-users out of band.
+For the Compose demo, seeding is explicitly enabled so the protected API is testable immediately with
+**`demo` / `demo1234`**. In a real deployment, leave seeding off and manage users out of band.
 
-### 3. Postgres profile without Docker
+> ⚠️ The Compose stack currently runs as `ASPNETCORE_ENVIRONMENT=Production` *with* seeding enabled
+> and a defaulted password. This is a known open item (Phase 6 **B1** in `MIGRATION_PLAN.md`) — do not
+> expose this stack outside a development machine until the seed credentials are made mandatory.
 
-Point the app at your own Postgres and provide the required env vars:
+### 3. Postgres without Docker
+
+Point the app at your own Postgres. Configuration keys nest with `:` in files and `__` in
+environment variables:
 
 ```bash
-export SPRING_PROFILES_ACTIVE=postgres
-export DB_URL='jdbc:postgresql://localhost:5432/middleware'
-export DB_USERNAME='middleware'
-export DB_PASSWORD='middleware'
-export JWT_SECRET='a-strong-secret-at-least-32-bytes-long'
+export Database__Provider='Postgres'
+export ConnectionStrings__Default='Host=localhost;Port=5432;Database=middleware;Username=middleware;Password=middleware'
+export Jwt__Secret='a-strong-secret-at-least-32-bytes-long'
 # Optional: opt into a seed user for testing
-export SEED_USER_ENABLED=true SEED_USER_USERNAME=demo SEED_USER_PASSWORD=demo1234
-./mvnw spring-boot:run
+export Security__SeedUser__Enabled=true
+export Security__SeedUser__Username=demo
+export Security__SeedUser__Password=demo1234
+dotnet run --project src/Middleware.Api
 ```
+
+Under Postgres the schema is applied with EF Core migrations at startup; under SQLite it is created
+directly (the dev database carries no migration history).
 
 ---
 
 ## Authentication & test user
 
-Auth is **token-based (JWT)** with a local JPA user table (`UserAccount`), BCrypt-hashed passwords,
-and a stateless Spring Security filter chain.
+Auth is **token-based (JWT, HS256)** with a local EF Core user table (`UserAccount`), BCrypt-hashed
+passwords, and stateless bearer authentication.
 
 1. **Get a token** — `POST /api/auth/login` with `{"username": "...", "password": "..."}`.
    The response is `{ "token", "tokenType": "Bearer", "expiresInSeconds" }`.
 2. **Call protected endpoints** — send `Authorization: Bearer <token>`.
 
-**Test user:** the dev profile and the Docker Compose demo both seed **`demo` / `demo1234`**. Bad
-credentials return `401`; a missing/expired/invalid token on a protected endpoint returns `401`.
+**Test user:** the Development environment and the Docker Compose demo both seed
+**`demo` / `demo1234`**. Bad credentials return `401`; a missing/expired/invalid token on a protected
+endpoint returns `401`.
 
-> The JWT secret is never shipped with a default. It must be provided via `JWT_SECRET` (or the dev
-> profile's throwaway value) and must be **≥ 32 characters** for HS256, otherwise the app fails fast
-> at startup.
+Validation is deliberately strict: the algorithm is pinned to HS256 (so no algorithm-confusion
+downgrade), the issuer is enforced, there is **no clock skew**, and a token whose subject no longer
+exists in the user store is rejected even if its signature is valid.
+
+> The JWT secret is never shipped with a default. It must be provided via configuration and must be
+> **≥ 32 characters** for HS256, otherwise the app fails fast at startup.
 
 ---
 
 ## Configuration reference
 
-Configuration is bound to typed `@ConfigurationProperties` and driven by environment variables.
+Configuration binds to typed options classes. Any key can be supplied by environment variable using
+`__` as the separator (`Jwt__Secret` ⇒ `Jwt:Secret`).
 
-| Env var                    | Profile(s)     | Default (base)                     | Purpose                                        |
-|----------------------------|----------------|------------------------------------|------------------------------------------------|
-| `SPRING_PROFILES_ACTIVE`   | all            | `dev`                              | Active profile (`dev` / `postgres` / `test`)   |
-| `SERVER_PORT`              | all            | `8080`                             | HTTP port                                      |
-| `JWT_SECRET`               | all            | — (dev has a throwaway value)      | HS256 signing key (**≥ 32 chars**, required)   |
-| `JWT_EXPIRATION_MINUTES`   | all            | `60`                               | Token lifetime                                 |
-| `DUMMYJSON_BASE_URL`       | all            | `https://dummyjson.com`            | Upstream source base URL                       |
-| `DUMMYJSON_CONNECT_TIMEOUT_MS` | all        | `3000`                             | Upstream connect timeout                       |
-| `DUMMYJSON_RESPONSE_TIMEOUT_MS`| all        | `5000`                             | Upstream response timeout                      |
-| `DB_URL`                   | postgres       | `jdbc:postgresql://localhost:5432/middleware` | JDBC URL                            |
-| `DB_USERNAME`              | postgres       | — (required)                       | DB user                                        |
-| `DB_PASSWORD`              | postgres       | — (required)                       | DB password                                    |
-| `SEED_USER_ENABLED`        | all            | `false` (`true` in dev)            | Create the seed user on startup                |
-| `SEED_USER_USERNAME`       | all            | — (`demo` in dev)                  | Seed user name                                 |
-| `SEED_USER_PASSWORD`       | all            | — (`demo1234` in dev)              | Seed user password                             |
+| Key                              | Default                     | Purpose                                       |
+|----------------------------------|-----------------------------|-----------------------------------------------|
+| `Database:Provider`              | `Sqlite`                    | `Sqlite` or `Postgres`                        |
+| `ConnectionStrings:Default`      | `Data Source=middleware-dev.db` (SQLite) | DB connection; **required** under Postgres |
+| `Jwt:Secret`                     | — (required, ≥ 32 chars)    | HS256 signing key                             |
+| `Jwt:ExpirationMinutes`          | `60`                        | Token lifetime                                |
+| `Jwt:Issuer`                     | `abysalto-middleware`       | Issued and enforced on validation             |
+| `Upstream:BaseUrl`               | `https://dummyjson.com`     | Upstream source base URL                      |
+| `Upstream:ConnectTimeoutMs`      | `3000`                      | Upstream connect timeout                      |
+| `Upstream:ResponseTimeoutMs`     | `5000`                      | Upstream response timeout                     |
+| `Upstream:MaxInMemoryCandidates` | `5000`                      | Ceiling on an in-memory price filter; exceeding it fails the request |
+| `Cache:MaximumSizeBytes`         | `67108864` (64 MiB)         | Total cache byte budget (**bytes, not entries**) |
+| `Cache:MaximumEntryBytes`        | `1048576` (1 MiB)           | Largest single cacheable entry                |
+| `Cache:ExpireAfterWriteSeconds`  | `60`                        | Entry TTL                                     |
+| `Summary:DescriptionMaxLength`   | `100`                       | `shortDescription` cap                        |
+| `Security:SeedUser:Enabled`      | `false`                     | Create the seed user on startup               |
+| `Security:SeedUser:Username`     | —                           | Seed user name                                |
+| `Security:SeedUser:Password`     | —                           | Seed user password                            |
 
-Profiles:
-- **`dev`** — H2 in-memory, H2 console on, seed user on (`demo`/`demo1234`), a throwaway JWT secret,
-  human-readable console logs. Default.
-- **`postgres`** — production-like: Postgres, JSON logs, no defaults for DB creds / JWT secret
-  (fail-fast), seeding off unless explicitly enabled.
-- **`test`** — H2, used by the automated tests.
-
-> **Schema management:** the `postgres` profile uses Hibernate `ddl-auto: update` to stay
-> self-contained for the demo. A real deployment should set `ddl-auto: validate` and manage the
-> schema with versioned migrations (Flyway or Liquibase) instead of letting Hibernate mutate it at
-> startup.
+Environments:
+- **`Development`** — SQLite, seed user on (`demo`/`demo1234`), a throwaway JWT secret, readable
+  console logs. See `appsettings.Development.json`.
+- **Anything else** — compact JSON logs, no default secret, seeding off unless explicitly enabled.
 
 ---
 
 ## Caching / request deduplication
 
 Repeated **search** and **filter** calls with the same parameters are served from an in-memory
-**Caffeine** cache (Spring Cache abstraction) instead of re-hitting the upstream.
+`HybridCache` instead of re-hitting the upstream.
 
-- **Backend / TTL:** Caffeine, `maximumSize=500, expireAfterWrite=60s` (`middleware.cache.spec`).
-- **Normalized keys:** cache keys are built by `CacheKeys` so semantically-identical requests collapse
-  to one entry — text is trimmed/lower-cased, and numeric price scales are normalized (`10` == `10.00`).
-  The same normalization feeds both the cache key and the actual upstream call, so they can never diverge.
-- **Pagination-independent filter cache:** for price-filtered queries the full candidate set is cached
-  by *category + price bounds only* (not by page), so paging through a filtered result reuses one
-  upstream fetch instead of re-fetching per page.
-- **Correctness:** the `@Cacheable` methods live in a dedicated `ProductQueryCache` bean so Spring's
-  cache proxy is always applied (self-invocation from `ProductService` would otherwise bypass it).
+- **Single-flight:** concurrent callers for the same key share one upstream fetch, so a cold cache
+  under load produces one request rather than a stampede.
+- **Normalized keys:** built by `CacheKeys` so semantically-identical requests collapse to one entry
+  — text is trimmed and lower-cased. The same normalization feeds both the cache key and the actual
+  upstream call, so the two can never diverge.
+- **Pagination- and price-independent candidate cache:** for price-filtered queries the *unfiltered*
+  candidate set is cached **by category alone**, and the price bounds are applied in memory over it.
+  The upstream call never depended on the bounds, so keying on them would have meant a full catalog
+  fetch per distinct pair — with client-supplied decimals, that is unbounded. Paging through a
+  filtered result, or re-filtering the same category by any other range, reuses one fetch.
+- **Bounded:** the cache is capped by a byte budget (`Cache:MaximumSizeBytes`) as well as the TTL.
+  Note the unit — it is bytes, not entry count.
+- **Cached values are immutable:** the domain records are marked `[ImmutableObject(true)]` and their
+  collections are frozen at the mapper, so the cache can hand one instance to every caller instead of
+  deserializing the entry on each hit.
+
+Note that `/api/products`, `/api/products/{id}` and `/api/products/categories` are **not** cached
+today. See Phase 6 **S3** in `MIGRATION_PLAN.md`.
 
 ---
 
@@ -247,25 +273,25 @@ Repeated **search** and **filter** calls with the same parameters are served fro
 Filters are pushed to the upstream where DummyJSON supports it, and applied in-service otherwise
 (documented in `DummyJsonProductSource`):
 
-| Capability     | Where it runs | Upstream used                          |
-|----------------|---------------|-----------------------------------------|
-| Pagination     | Upstream      | `?limit=&skip=`                         |
-| Name search    | Upstream      | `/products/search?q=`                   |
-| Category filter| Upstream      | `/products/category/{slug}`             |
-| Price range    | In-service    | not supported upstream — filtered locally |
+| Capability      | Where it runs | Upstream used                             |
+|-----------------|---------------|-------------------------------------------|
+| Pagination      | Upstream      | `?limit=&skip=`                           |
+| Name search     | Upstream      | `/products/search?q=`                     |
+| Category filter | Upstream      | `/products/category/{slug}`               |
+| Price range     | In-service    | not supported upstream — filtered locally |
 
 Category and price filters are **combinable**: the category is pushed down, then the price range is
-applied to the returned candidate set. A candidate-count guard logs a warning if an unusually large set
-is materialized in memory (safe for DummyJSON's small catalog; a larger source should push the price
-filter down instead).
+applied to the returned candidate set. If that set exceeds `Upstream:MaxInMemoryCandidates` the
+request fails with a `502` rather than materializing an unbounded catalog in memory.
 
 ---
 
 ## Error handling
 
-All errors are returned as **RFC 7807 `application/problem+json`** via a single
-`GlobalExceptionHandler`. Security failures (401/403) occur inside the filter chain but are delegated
-to the same handler, so every error shares one consistent shape.
+All errors are returned as **RFC 7807 `application/problem+json`**. Authentication and authorization
+failures happen inside the middleware pipeline, before any endpoint runs, but are rendered through
+the same writer — so every error shares one consistent shape, including framework-generated
+responses such as an unknown route or an unsupported method.
 
 | Situation                                  | Status |
 |--------------------------------------------|:------:|
@@ -276,68 +302,94 @@ to the same handler, so every error shares one consistent shape.
 | Upstream source failure or timeout         | `502`  |
 | Unexpected server error                    | `500`  |
 
+Raw exception messages are never returned; upstream failures and unexpected errors render fixed,
+client-safe text and log the detail server-side.
+
 ---
 
 ## Logging
 
-Structured SLF4J/Logback logging at appropriate levels (INFO/WARN/ERROR):
+Structured Serilog logging at appropriate levels:
 
-- A `RequestLoggingFilter` assigns a **correlation id** per request (MDC) and logs method, path, status,
-  and duration.
-- **Non-prod profiles** use a readable console pattern including the correlation id.
-- The **`postgres` profile** emits one **JSON** object per line (Logstash encoder) with
-  `correlationId` / `method` / `path` / `status` / `durationMs` as discrete fields for aggregation.
-- Secrets are never logged — the auth flow logs only the username, never the password or the token.
+- `CorrelationIdMiddleware` assigns a **correlation id** per request (Serilog `LogContext`), echoes it
+  on the response as `X-Correlation-Id`, and logs method, path, status and duration. An inbound id is
+  reused only when it matches a strict safe pattern, which also blocks log injection.
+- **Development** uses a readable console pattern including the correlation id.
+- **Other environments** emit one compact **JSON** object per line, with `correlationId` / `method` /
+  `path` / `status` / `durationMs` as discrete fields for aggregation.
+- Secrets are never logged — the auth flow logs only the username, never the password or the token,
+  and no request headers or bodies are logged anywhere.
 
 ---
 
 ## API documentation (Swagger)
 
-springdoc-openapi generates the OpenAPI spec and Swagger UI, with a JWT bearer scheme wired in so you
-can authorize and try protected endpoints directly:
+Swashbuckle generates the OpenAPI document and serves Swagger UI, with a JWT bearer scheme wired in
+so you can authorize and try protected endpoints directly:
 
-- Swagger UI: `http://localhost:8080/swagger-ui.html`
-- OpenAPI JSON: `http://localhost:8080/v3/api-docs`
+- Swagger UI: `http://localhost:8080/swagger`
+- OpenAPI JSON: `http://localhost:8080/swagger/v1/swagger.json`
 
-Click **Authorize**, paste the token from `/api/auth/login`, and invoke any endpoint.
+Click **Authorize**, paste the token from `/api/auth/login`, and invoke any endpoint. Public endpoints
+carry no lock; the common RFC-7807 error responses are declared on every operation.
 
 ---
 
 ## Testing
 
 ```bash
-./mvnw clean verify          # unit + integration tests
-./mvnw test                  # unit tests only
+dotnet test                                              # everything
+dotnet test tests/Middleware.UnitTests                   # unit only
+dotnet test tests/Middleware.IntegrationTests            # integration only
 ```
 
-- **Unit tests** cover truncation, DTO mapping, the price filter, cache-key normalization, the service
-  layer (Mockito), JWT round-trips, and the paged-response envelope.
-- **Integration tests** cover the source against `MockRestServiceServer` (bound to the `RestClient`),
-  the full API over H2 including the auth flow, the RFC-7807 error paths (400/401/403/404/502), and
-  cache dedup.
-- The Mockito java agent is attached up front by the build (surefire/failsafe) so tests run
-  warning-free on JDK 25+.
+Current state: **136 passing** (68 unit + 68 integration), Release build warning-free under
+`TreatWarningsAsErrors`.
+
+- **Unit tests** cover truncation boundaries, DTO mapping, the price filter, cache-key normalization
+  and single-flight behaviour, JWT round-trips (including tampered/expired/wrong-issuer rejection),
+  and the paged-response envelope.
+- **Integration tests** host the real pipeline with `WebApplicationFactory<Program>`, substituting
+  only the network boundary (`IProductSource`), so the auth flow, the RFC-7807 contract, request
+  validation and the OpenAPI document are all exercised as a client would hit them. The upstream
+  adapter is covered separately against WireMock.Net.
+- One test uses **Testcontainers** to apply the EF migration to a real PostgreSQL container; it skips
+  itself when Docker is unavailable.
 
 ---
 
 ## Project structure
 
 ```
-src/main/java/com/abysalto/middleware
-├── config/       # typed properties, security, cache, OpenAPI, RestClient, seed user
-├── controller/   # ProductController, AuthController
-├── domain/       # internal domain model (Product, ProductPage, …)
-├── dto/          # API DTOs (summary, detail, paged envelope, auth)
-├── exception/    # domain exceptions + GlobalExceptionHandler (RFC 7807)
-├── model/        # JPA entities (UserAccount, Role)
-├── repository/   # Spring Data repositories
-├── security/     # JWT service, auth filter, user details
-├── service/      # ProductService, ProductQueryCache, ProductMapper
-├── source/       # ProductSource abstraction
-│   └── dummyjson # DummyJSON implementation + isolated upstream DTOs
-├── util/         # TextUtils (truncation)
-└── web/          # RequestLoggingFilter (correlation id)
+.
+├── src/
+│   ├── Middleware.Core/            # domain, DTOs, options, application services — no I/O
+│   │   ├── Abstractions/           # IProductSource — the extension point
+│   │   ├── Common/                 # CacheKeys, TextUtils
+│   │   ├── Domain/                 # Product, ProductPage, Review, Meta, Dimensions
+│   │   ├── Dtos/                   # summary, detail, paged envelope, auth
+│   │   ├── Exceptions/             # domain exceptions
+│   │   ├── Options/                # typed configuration
+│   │   └── Services/               # ProductService, ProductQueryCache, ProductMapper
+│   ├── Middleware.Infrastructure/  # everything that talks to the outside world
+│   │   ├── Persistence/            # EF Core context, UserAccount, repository, migrations
+│   │   ├── Security/               # JwtService, BCrypt hasher, user seeder
+│   │   └── Upstream/               # DummyJSON adapter + isolated upstream DTOs
+│   └── Middleware.Api/             # the web host
+│       ├── Endpoints/              # product and auth endpoints
+│       ├── Errors/                 # RFC-7807 problem body, exception handler
+│       ├── Middleware/             # correlation id, routing parity
+│       ├── OpenApi/                # Swagger document configuration
+│       ├── Security/               # bearer authentication wiring
+│       ├── Serialization/          # JSON converters
+│       └── Validation/             # FluentValidation rules, query parsing
+└── tests/
+    ├── Middleware.UnitTests/
+    └── Middleware.IntegrationTests/
 ```
+
+`MIGRATION_PLAN.md` records how this service was ported from its original Spring Boot implementation,
+and tracks the remaining pre-release hardening items (Phase 6).
 
 ---
 
