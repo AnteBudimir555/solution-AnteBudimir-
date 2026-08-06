@@ -12,9 +12,16 @@ namespace Middleware.Api.OpenApi;
 /// <summary>
 /// OpenAPI document and UI — the springdoc replacement.
 ///
-/// <para>On the net8.0 target <c>Microsoft.AspNetCore.OpenApi</c> only contributes endpoint metadata
-/// (its document generator arrived in .NET 9), so Swashbuckle generates the document and serves the
-/// UI. The generated contract is what matters, and it is pinned to the Java one: the same
+/// <para>Swashbuckle generates the document and serves the UI, rather than the in-box
+/// <c>Microsoft.AspNetCore.OpenApi</c> generator with Scalar that MIGRATION_PLAN §2.1 sketches. That
+/// started as a constraint — on the net8.0 fallback the in-box package contributed endpoint metadata
+/// only — but the bump to net10.0 removed it, so this is now a <em>retained</em> choice rather than a
+/// forced one. What retains it is the rest of this file: the operation and schema filters below are
+/// what pin the document to the Java service's contract, and swapping generators rewrites them. That
+/// is a contract change wearing a package change's clothes, so it belongs in its own commit measured
+/// against the OpenAPI diff, not folded in as an incidental cleanup.</para>
+///
+/// <para>The generated contract is what matters, and it is pinned to the Java one: the same
 /// <c>bearerAuth</c> scheme, the same per-operation security (public endpoints carry no lock), and the
 /// same centrally-declared RFC-7807 error responses.</para>
 /// </summary>

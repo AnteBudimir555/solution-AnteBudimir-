@@ -431,7 +431,7 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 > **Status: §6.1 and §6.2 are closed.** The cache cluster (B2, B3, S2, S5), the SDK pin (S4), the
 > .NET-only restructure that carried B4 with it, the seed-credential fix (B1), the upstream resilience
 > pipeline (S1), the caching coverage gap (S3), the 401 challenge detail (S6) and the CORS allowlist
-> (S7) have landed, and §6.3 has L1 and L2 closed. Remaining: the open half of L3, and L4.
+> (S7) have landed, and §6.3 has L1, L2 and L3 closed. Remaining: **L4 only**.
 >
 > **Verified on SDK 10.0.302** — the version the pin records and the Phase 5 parity run used,
 > installed user-local to `~/.dotnet` after S4 landed. `dotnet build -c Release` is warning-free under
@@ -827,9 +827,30 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
   of the contract with no test behind it. Also confirmed against the **live** DummyJSON that the one
   real implementation honours the contract being stated: `q=phone|Phone|PHONE|pHoNe` all return
   `total=23`.
-- [ ] **L3 — Clear the stale post-bump comments.** *(Half done, in S3.)*
-  `ApiDocumentationExtensions.cs:15-19` still says *"On the net8.0 target … its document generator
-  arrived in .NET 9"* — **still open**. ~~`CachingTests.cs:24-26` still says *"HybridCache on this
+- [x] **L3 — Clear the stale post-bump comments.** *(Done — the S3 half, and now the second.)*
+  ~~`ApiDocumentationExtensions.cs:15-19` still says *"On the net8.0 target … its document generator
+  arrived in .NET 9"*.~~ **Done.** The claim was false on two counts: the target has been `net10.0`
+  since the runtime bump, and the in-box generator it says is missing is present. Verified rather
+  than assumed — a scratch `net10.0` web project referencing the same `Microsoft.AspNetCore.OpenApi`
+  10.0.10 compiles `AddOpenApi()` + `MapOpenApi()` with 0 errors.
+
+  > **The comment was contradicted by the file next to it.** `Middleware.Api.csproj:3-10` already
+  > carried the corrected reasoning — .NET 10 ships the generator, the Scalar swap is deliberately
+  > deferred because it would rewrite the filters that pin the document to the Java contract. So the
+  > repository stated both the false version and its correction, a few lines apart, and a reader had
+  > no way to tell which was current. The `.cs` comment now says what the `.csproj` says: Swashbuckle
+  > is a **retained** choice, not a forced one, and what retains it is the operation and schema
+  > filters in that same file.
+  >
+  > Two things checked and deliberately left alone. `Directory.Build.props:2-7` also mentions the
+  > .NET 8 fallback, but as accurate *history* alongside a correct statement of the current target —
+  > it is a record, not a stale claim, and the same reasoning that preserved the historical `dotnet/…`
+  > paths in Phases 1–5 applies. `CachingTests.cs:25` mentions the old target too, in the past tense,
+  > as the record of what S3 corrected. A repo-wide sweep for `net8`/`net9`/`.NET 8`/`.NET 9` and for
+  > undated phrasings (*"arrived in"*, *"on this target"*, *"only contributes"*) outside `bin`/`obj`
+  > found nothing else, so L3 is closed rather than merely advanced.
+
+  ~~`CachingTests.cs:24-26` still says *"HybridCache on this
   target framework exposes no clear-all (tag-based eviction arrived in .NET 9)"* — it is available
   now, and the per-key eviction workaround is no longer needed.~~ **Done in S3**, which needed the
   clear-all: the claim was verified (`RemoveByTagAsync("*")` evicts even untagged entries) and the
