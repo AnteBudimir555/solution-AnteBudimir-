@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 using Middleware.Core.Abstractions;
 using Middleware.Core.Common;
 using Middleware.Core.Domain;
+using Middleware.Core.Exceptions;
 using Middleware.Core.Options;
 
 namespace Middleware.Core.Services;
@@ -16,14 +17,16 @@ namespace Middleware.Core.Services;
 ///   <item><see cref="HybridCache"/> provides single-flight (stampede) protection per key — the direct
 ///   equivalent of Spring's <c>@Cacheable(sync = true)</c>: concurrent callers for the same key share
 ///   one upstream fetch.</item>
-///   <item>The price-filter candidate set is cached by category + price bounds only —
-///   <see cref="PriceFilteredCandidatesAsync"/> is deliberately independent of pagination — so paging
-///   through a filtered result reuses a single upstream fetch instead of re-fetching the full catalog
-///   per page.</item>
+///   <item>The candidate set behind a price filter is cached by category alone —
+///   <see cref="PriceFilteredCandidatesAsync"/> is deliberately independent of both pagination and the
+///   price bounds — so paging through a filtered result, or filtering the same category by any other
+///   range, reuses a single upstream fetch instead of re-fetching the full catalog.</item>
 /// </list>
 ///
 /// <para>Each method normalizes its free-text inputs via <see cref="CacheKeys"/>, the same
-/// normalization the cache keys apply, so the cache key and the actual upstream call can never diverge.</para>
+/// normalization the cache keys apply, so the cache key and the actual upstream call can never diverge.
+/// Nothing that does <em>not</em> change the upstream call belongs in a key: the price bounds are
+/// applied in memory, over the cached set, and so are absent from it.</para>
 /// </summary>
 public sealed class ProductQueryCache(
     IProductSource source,
@@ -65,24 +68,45 @@ public sealed class ProductQueryCache(
     }
 
     /// <summary>
-    /// The full candidate set for a price-filtered query (optionally scoped to a category), already
-    /// price-filtered. Cached by category + price bounds only — not by pagination — so the service can
-    /// slice any page out of it without another upstream call.
+    /// The price-filtered candidate set for a filtered query (optionally scoped to a category), from
+    /// which the service slices the requested page.
+    ///
+    /// <para>Only the <em>unfiltered</em> candidate set is cached, keyed by category alone (see
+    /// <see cref="CacheKeys.FilterCandidates"/>); the price bounds are applied per call over that
+    /// cached set. The upstream call never depended on the bounds, so keying on them bought nothing and
+    /// cost a full catalog fetch per distinct pair. Filtering a few hundred already-materialized
+    /// products per request is far cheaper than the fetch it replaces.</para>
     /// </summary>
     public async ValueTask<IReadOnlyList<Product>> PriceFilteredCandidatesAsync(
         string? category, decimal? minPrice, decimal? maxPrice, CancellationToken ct = default)
     {
+        var candidates = (await CandidatesAsync(category, ct)).Items;
+
+        var filtered = candidates.Where(p => MatchesPrice(p.Price, minPrice, maxPrice)).ToList();
+        logger.LogDebug("Price filter [{Min}, {Max}] on {Count} candidates -> {Matches} matches",
+            minPrice, maxPrice, candidates.Count, filtered.Count);
+        return filtered;
+    }
+
+    /// <summary>
+    /// The cached, unfiltered candidate set for a category (or the whole catalog when blank).
+    /// <para>Cached as the <see cref="ProductPage"/> the source returned rather than its
+    /// <c>Items</c>: the cache can only skip a deserialize per hit for a type it knows is immutable,
+    /// and that knowledge is carried by the concrete record, not by the <c>IReadOnlyList&lt;T&gt;</c>
+    /// interface — which nothing could vouch for.</para>
+    /// </summary>
+    private async ValueTask<ProductPage> CandidatesAsync(string? category, CancellationToken ct)
+    {
+        var normalizedCategory = CacheKeys.NormalizeText(category);
         return await cache.GetOrCreateAsync(
-            CacheKeys.FilterCandidates(category, minPrice, maxPrice),
-            (self: this, category, minPrice, maxPrice),
-            static (state, token) => state.self.FetchPriceFilteredAsync(state.category, state.minPrice, state.maxPrice, token),
+            CacheKeys.FilterCandidates(category),
+            (self: this, normalizedCategory),
+            static (state, token) => state.self.FetchCandidatesAsync(state.normalizedCategory, token),
             cancellationToken: ct);
     }
 
-    private async ValueTask<IReadOnlyList<Product>> FetchPriceFilteredAsync(
-        string? category, decimal? minPrice, decimal? maxPrice, CancellationToken ct)
+    private async ValueTask<ProductPage> FetchCandidatesAsync(string normalizedCategory, CancellationToken ct)
     {
-        var normalizedCategory = CacheKeys.NormalizeText(category);
         var candidates = normalizedCategory.Length == 0
             ? await source.ListAsync(0, IProductSource.All, ct)
             : await source.FindByCategoryAsync(normalizedCategory, 0, IProductSource.All, ct);
@@ -90,18 +114,21 @@ public sealed class ProductQueryCache(
         var candidateCount = candidates.Items.Count;
         if (candidateCount > _maxInMemoryCandidates)
         {
-            // Price filtering cannot be pushed down to the current source, so the full candidate set is
-            // held in memory. This is safe for DummyJSON's small catalog; a larger source should push the
-            // price filter down or bound the fetch rather than materialize everything here.
-            logger.LogWarning(
-                "Price filter loaded {Count} candidates into memory (threshold {Threshold}); consider pushing the "
-                + "price filter down to the source or bounding the fetch.", candidateCount, _maxInMemoryCandidates);
+            // Price filtering cannot be pushed down to the current source, so the full candidate set
+            // would have to be held in memory. Refusing is the safe answer: the alternative is an
+            // unbounded allocation driven by upstream catalog size, on a request a client can repeat.
+            // A source large enough to reach this needs the price filter pushed down (see the
+            // ProductQuery sketch in the migration plan), not a bigger threshold.
+            logger.LogError(
+                "Price filter would load {Count} candidates into memory, over the {Threshold} limit; refusing. "
+                + "Push the price filter down to the source or raise Upstream:MaxInMemoryCandidates deliberately.",
+                candidateCount, _maxInMemoryCandidates);
+            throw new UpstreamException(
+                $"The product source returned {candidateCount} candidates for an in-memory price filter, "
+                + $"over the configured limit of {_maxInMemoryCandidates}.");
         }
 
-        var filtered = candidates.Items.Where(p => MatchesPrice(p.Price, minPrice, maxPrice)).ToList();
-        logger.LogDebug("Price filter [{Min}, {Max}] on {Count} candidates -> {Matches} matches",
-            minPrice, maxPrice, candidateCount, filtered.Count);
-        return filtered;
+        return candidates;
     }
 
     private static int Offset(int page, int size) => page * size;

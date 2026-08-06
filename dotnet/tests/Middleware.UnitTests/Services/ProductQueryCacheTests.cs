@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Middleware.Core.Abstractions;
 using Middleware.Core.Domain;
+using Middleware.Core.Exceptions;
 using Middleware.Core.Options;
 using Middleware.Core.Services;
 using Middleware.UnitTests.Support;
@@ -112,15 +113,55 @@ public class ProductQueryCacheTests
     }
 
     [Fact]
-    public async Task PriceFilteredCandidatesStillFiltersWhenOverInMemoryThreshold()
+    public async Task PriceFilteredCandidatesRefusesToLoadMoreThanTheInMemoryThreshold()
     {
         var catalog = new List<Product> { TestData.Product(1, 5m), TestData.Product(2, 50m) };
         _source.ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>())
             .Returns(new ProductPage(catalog, catalog.Count, 0, 0));
 
-        // threshold 1 forces the warn branch; behaviour must be unchanged.
-        var filtered = await WithThreshold(1).PriceFilteredCandidatesAsync(null, null, 10m);
+        // The threshold is a limit, not a log line: over it, the fetch is refused rather than
+        // materializing an unbounded catalog on a request a client can repeat at will.
+        var refused = await Assert.ThrowsAsync<UpstreamException>(
+            async () => await WithThreshold(1).PriceFilteredCandidatesAsync(null, null, 10m));
 
-        Assert.Equal(new long[] { 1 }, filtered.Select(p => p.Id));
+        Assert.Contains("over the configured limit", refused.Message);
+    }
+
+    /// <summary>
+    /// The bound that makes the candidate cache safe to expose to clients: price bounds are
+    /// client-supplied decimals with unlimited distinct values, so if they reached the cache key every
+    /// new pair would miss and pull the entire upstream catalog. They are applied in memory over one
+    /// cached set instead, and the upstream sees a single fetch however the bounds are varied.
+    /// </summary>
+    [Fact]
+    public async Task VaryingPriceBoundsShareOneUpstreamFetch()
+    {
+        var catalog = new List<Product> { TestData.Product(1, 5m), TestData.Product(2, 50m) };
+        _source.ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>())
+            .Returns(new ProductPage(catalog, catalog.Count, 0, 0));
+        var cache = Cache();
+
+        for (int cents = 0; cents < 200; cents++)
+        {
+            await cache.PriceFilteredCandidatesAsync(null, 10m + (cents * 0.01m), 50m);
+        }
+
+        await _source.Received(1).ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PriceBoundsStillFilterTheCachedCandidateSetPerCall()
+    {
+        var catalog = new List<Product> { TestData.Product(1, 5m), TestData.Product(2, 50m) };
+        _source.ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>())
+            .Returns(new ProductPage(catalog, catalog.Count, 0, 0));
+        var cache = Cache();
+
+        // Sharing one cached fetch must not mean sharing one answer: each call filters it afresh.
+        var cheap = await cache.PriceFilteredCandidatesAsync(null, null, 10m);
+        var dear = await cache.PriceFilteredCandidatesAsync(null, 10m, null);
+
+        Assert.Equal(new long[] { 1 }, cheap.Select(p => p.Id));
+        Assert.Equal(new long[] { 2 }, dear.Select(p => p.Id));
     }
 }

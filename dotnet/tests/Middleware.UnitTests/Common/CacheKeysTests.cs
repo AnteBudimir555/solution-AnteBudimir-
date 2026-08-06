@@ -33,26 +33,22 @@ public class CacheKeysTests
         Assert.Equal("page||0|20", CacheKeys.FilterPage("  ", 0, 20));
 
     [Fact]
-    public void FilterCandidatesKeyUsesStarForAbsentBounds() =>
-        Assert.Equal("cand|beauty|*|*", CacheKeys.FilterCandidates("Beauty", null, null));
+    public void FilterCandidatesKeyIsTheNormalizedCategoryAlone() =>
+        Assert.Equal("cand|beauty", CacheKeys.FilterCandidates("  Beauty "));
 
     [Fact]
-    public void FilterCandidatesKeyNormalizesEquivalentNumericScales()
-    {
-        string a = CacheKeys.FilterCandidates("beauty", 10.00m, 50m);
-        string b = CacheKeys.FilterCandidates("beauty", 10m, 50.0000m);
-        Assert.Equal("cand|beauty|10|50", a);
-        Assert.Equal(a, b);
-    }
+    public void FilterCandidatesKeyForAnAbsentCategoryIsStable() =>
+        Assert.Equal(CacheKeys.FilterCandidates(null), CacheKeys.FilterCandidates("   "));
 
     [Fact]
     public void FilterPageAndFilterCandidatesKeySpacesNeverCollide()
     {
         // Both live in the same physical cache; the prefixes must keep them disjoint.
         string page = CacheKeys.FilterPage("beauty", 0, 20);
-        string candidates = CacheKeys.FilterCandidates("beauty", null, null);
+        string candidates = CacheKeys.FilterCandidates("beauty");
         Assert.StartsWith("page|", page);
         Assert.StartsWith("cand|", candidates);
         Assert.NotEqual(page, candidates);
     }
+
 }

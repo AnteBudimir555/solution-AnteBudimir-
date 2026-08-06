@@ -69,8 +69,8 @@ public class ProductQueryCacheSingleFlightTests
     [Fact]
     public async Task PriceFilteredCandidatesAreCachedIndependentlyOfPage()
     {
-        // The candidate set is keyed by category + price bounds only, so paging through a filtered
-        // result must reuse a single upstream catalog fetch regardless of how many pages are requested.
+        // The candidate set is keyed by category alone, so paging through a filtered result must reuse
+        // a single upstream catalog fetch regardless of how many pages are requested.
         var catalog = new ProductPage(
             [new Product(1, "A", null, "beauty", 10m, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null)],

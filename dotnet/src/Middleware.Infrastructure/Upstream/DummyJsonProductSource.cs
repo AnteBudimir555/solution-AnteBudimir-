@@ -83,7 +83,9 @@ public sealed class DummyJsonProductSource(HttpClient httpClient, ILogger<DummyJ
         {
             return EmptyPage;
         }
-        var items = body.Products.Select(DummyProductMapper.ToDomain).ToList();
+        // Frozen, not just projected: the page is cached and shared across concurrent requests
+        // (see the immutability contract on ProductPage).
+        var items = DummyProductMapper.Freeze(body.Products.Select(DummyProductMapper.ToDomain))!;
         return new ProductPage(items, body.Total, body.Skip, body.Limit);
     }
 

@@ -4,6 +4,7 @@ using Middleware.Core.Abstractions;
 using Middleware.Core.Common;
 using Middleware.Core.Domain;
 using Middleware.Core.Services;
+using Middleware.IntegrationTests.Support;
 using NSubstitute;
 using NSubstitute.ClearExtensions;
 
@@ -33,7 +34,8 @@ public sealed class CachingTests(MiddlewareApiFactory factory)
         await cache.RemoveAsync(
         [
             CacheKeys.Search("phone", 0, 20),
-            CacheKeys.FilterCandidates(null, 10m, 50m)
+            CacheKeys.Search("bulky", 0, 100),
+            CacheKeys.FilterCandidates(null)
         ]);
     }
 
@@ -64,16 +66,46 @@ public sealed class CachingTests(MiddlewareApiFactory factory)
     }
 
     [Fact]
-    public async Task PriceFilterCandidateSetIsFetchedOncePerCategoryAndBounds()
+    public async Task PriceFilterCandidateSetIsFetchedOncePerCategoryWhateverTheBounds()
     {
         factory.Source.ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>())
             .Returns(new ProductPage([], 0, 0, 0));
 
         await InScopeAsync(q => q.PriceFilteredCandidatesAsync(null, 10m, 50m));
-        // Equivalent numeric scale must reuse the cached candidate set (no second upstream fetch).
+        // Any other range over the same category must reuse the cached candidate set. The bounds are
+        // not part of the key precisely so that a client varying them cannot force a catalog fetch
+        // per request — they are applied in memory over this one entry.
         await InScopeAsync(q => q.PriceFilteredCandidatesAsync(null, 10.00m, 50.0m));
+        await InScopeAsync(q => q.PriceFilteredCandidatesAsync(null, 11.37m, 49.99m));
+        await InScopeAsync(q => q.PriceFilteredCandidatesAsync(null, null, null));
 
         await factory.Source.Received(1).ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// Guards the unit of the configured cache size bound. <c>MemoryCacheOptions.SizeLimit</c> is a
+    /// <em>byte</em> budget — HybridCache sizes each entry by its serialized length — but the Caffeine
+    /// spec it replaces counted entries. A limit carried across as though it were an entry count is a
+    /// few hundred bytes, which throws nothing and logs nothing: it silently retains no entry large
+    /// enough to matter, turning every request into a cache miss.
+    ///
+    /// <para>This is why the fixture is a realistically-sized page rather than the empty one the other
+    /// tests use. An empty page fits inside even a broken limit, so the tests above would stay green
+    /// while the cache did nothing in production — which is exactly how such a bound gets shipped.</para>
+    /// </summary>
+    [Fact]
+    public async Task AFullSizedPageIsRetainedUnderTheConfiguredSizeBound()
+    {
+        var products = Enumerable.Range(1, 100)
+            .Select(i => TestData.Product(i, $"Product {i}", new string('d', 400), 9.99m, "beauty"))
+            .ToList();
+        factory.Source.SearchByNameAsync("bulky", 0, 100, Arg.Any<CancellationToken>())
+            .Returns(new ProductPage(products, products.Count, 0, 100));
+
+        await InScopeAsync(q => q.SearchAsync("bulky", 0, 100));
+        await InScopeAsync(q => q.SearchAsync("bulky", 0, 100));
+
+        await factory.Source.Received(1).SearchByNameAsync("bulky", 0, 100, Arg.Any<CancellationToken>());
     }
 
     /// <summary>

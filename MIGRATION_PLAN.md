@@ -12,6 +12,13 @@
 > **Progress tracking.** Every actionable task is a markdown checkbox. Check items off
 > (`- [x]`) as they land. Phase gates are the **Acceptance Criteria** blocks — do not
 > advance a phase until all of its criteria are checked.
+>
+> **Current state.** Phases 1–5 are complete: the port is behaviorally at parity (79/80 shadow
+> cases, 0 unexpected contract differences, 133 tests passing on `net10.0`). **Phase 6 —
+> Pre-Release Hardening — is open**, and holds four release blockers found by a pre-release review
+> that asked whether the *matched* behaviour is fit to ship. Parity is not the same gate as
+> readiness, and the shadow harness is structurally unable to raise most of Phase 6 because both
+> services agree. Read §6.4 (Subtle traps) before implementing anything in §6.1–6.3.
 
 ---
 
@@ -392,6 +399,318 @@ counts: single-flight 1/1 upstream calls, warm 0/0, mixed corpus 253/253, with .
 faster than Java on the warm-path p50. (The absolute latencies are not comparable to the net8 run —
 that run had a quieter machine — and no controlled net8-vs-net10 benchmark was done.)
 
+### Phase 6: Pre-Release Hardening — **OPEN**
+
+> **Status: in progress — the cache cluster (B2, B3, S2, S5) has landed.** Remaining: B1, B4, S1,
+> S3, S4, S6, S7 and §6.3.
+>
+> **Verification caveat, and it is a real one.** The workstation carries only SDK 8.0.300, so the
+> `net10.0` solution cannot be built or tested here (that is S4's whole point). The cache work was
+> verified by compiling `Middleware.Core` and the changed `Upstream` files against `net8.0` in
+> isolation — clean under `TreatWarningsAsErrors` — and by running the changed cache tests on that
+> target: **23 passed, 0 failed**, including the three new ones. The package under test
+> (`Caching.Hybrid` 10.8.0) is the same build; what has *not* been exercised is the full solution, the
+> integration suite (`AFullSizedPageIsRetainedUnderTheConfiguredSizeBound` in particular, which needs
+> the real host), and the parity harness. **Run all three on a .NET 10 SDK before this is considered
+> done.**
+>
+> Two traps were settled empirically rather than by reasoning, and one of them was recorded wrongly in
+> this document — see T1, T2 and T4, all corrected in place with the measurements.
+>
+> Phases 1–5 proved *parity*: the .NET service behaves as the Java one does.
+> A pre-release review (staff-level, security/performance/architecture) accepted that parity and then
+> asked a different question — whether the behaviour being matched is fit to ship. Most of it is. The
+> items below are where it is not.
+>
+> **Three of these are inherited, not introduced.** Faithfully porting a design also ports its gaps,
+> and the shadow harness cannot flag them precisely *because* both services agree. They are recorded
+> here as deliberate divergences to take, not as porting defects. Each such item is marked
+> **[inherited]**, and taking it will move a shadow-corpus or load-mode number — see §6.4.
+
+#### 6.1 Release blockers
+
+- [ ] **B1 — Remove the known-credential account from the Production compose stack.**
+  `docker-compose.dotnet.yml:48,58-60` sets `ASPNETCORE_ENVIRONMENT: Production` *and*
+  `Security__SeedUser__Enabled: "true"` *and* `SEED_USER_PASSWORD:-demo1234`. The documented
+  one-command startup therefore publishes a production-mode service on host port 8081 with
+  `demo`/`demo1234`. This contradicts the stated intent in `appsettings.json:36` — *"Disabled by
+  default so production-like configurations never create a known-credential account."* `JWT_SECRET`
+  already uses the correct `${VAR:?message}` form on the line above; apply the same to both seed
+  values, and add `SEED_USER_USERNAME` / `SEED_USER_PASSWORD` to `.env.example` (which does not
+  carry them today, so `:?` alone breaks the documented `cp .env.example .env` flow).
+- [x] **B2 — Bound the price-filter cache key space.** *(Done — by a different route than proposed.)*
+  `CacheKeys.FilterCandidates` keyed on the raw `decimal` bounds. `Price()` collapsed `10` and
+  `10.00`, but nothing collapsed `10.01` and `10.02`. Each distinct pair missed the cache, triggered
+  `source.ListAsync(0, IProductSource.All, ct)` — a **full-catalog fetch** — and retained a full
+  catalog copy in L1 for the TTL. One cheap authenticated request amplified into one full upstream
+  download plus one full catalog retained, and single-flight could not help because the keys differed
+  by construction.
+
+  > **Implemented by removing the bounds from the key, not by quantizing them.** The plan proposed
+  > rounding to cents and capping magnitude. That shrinks the key space without bounding it, needs a
+  > new upper-bound validation rule (a wire-contract change the Java service does not have), changes
+  > results at the rounding margin, and carries T1. The observation that retires all of it: **the
+  > upstream call never depended on the price bounds at all** — `FetchPriceFilteredAsync` fetched the
+  > same catalog whatever they were, then filtered in memory. A value that does not change the
+  > fetch has no business in the key. The cache now holds the *unfiltered* candidate set keyed by
+  > category alone, and the bounds are applied per call over it. Key space: one entry per category.
+  > Upstream fetches for any number of distinct ranges over one category: one. No new validation, no
+  > contract change, no rounding, and T1 cannot occur.
+
+  Proven by `VaryingPriceBoundsShareOneUpstreamFetch` (200 distinct bounds → 1 upstream call) and
+  `PriceBoundsStillFilterTheCachedCandidateSetPerCall` (one shared fetch must not become one shared
+  answer). Both pass.
+- [x] **B3 — Implement or delete `Cache:MaximumSize`.** *(Done — implemented, with corrected units.)*
+  `CacheOptions` bound it, documented it as *"Bounds the size … the .NET analog of
+  `maximumSize=500,expireAfterWrite=60s`"*, and never read it — `grep -rn "MaximumSize" src/` returned
+  only the declaration. The backing `IMemoryCache` had no `SizeLimit`, so the cache was bounded by the
+  60s TTL alone. Now `AddMemoryCache(o => o.SizeLimit = …)` is registered ahead of `AddHybridCache`
+  (which only adds one if absent), plus `MaximumPayloadBytes`/`MaximumKeyLength`.
+
+  > **The option was renamed to `MaximumSizeBytes`, because the unit changed and silence was the
+  > failure mode.** See T2: the budget is bytes, not entries, and `500` carried across verbatim
+  > retains nothing while throwing and logging nothing. `MaximumEntryBytes` caps a single entry so one
+  > pathological response cannot evict everything else. A deliberate, documented divergence from the
+  > Caffeine spec — equivalent capacity, not an equivalent number.
+- [ ] **B4 — Document the .NET service.** `grep -in "dotnet\|\.NET" README.md` returns **zero**
+  matches and no `dotnet/README.md` exists. The README describes the Java service only (JDK 21+,
+  `source/ProductSource.java`). Either add a `dotnet/README.md` mirroring the existing structure, or
+  add a .NET section to the root README covering: prerequisites (SDK 10.0.302 — see S4), run/test
+  commands, the compose stack and its env vars, the endpoint table, the error contract, and the
+  push-down policy. The task checklist scores this deliverable as documentation, and it is currently
+  a FAIL.
+
+#### 6.2 Should-fix before release
+
+- [ ] **S1 — Add a resilience pipeline to the upstream client.** `UpstreamServiceCollectionExtensions`
+  registers a typed client with a base address, timeouts and decompression, and nothing else;
+  `Microsoft.Extensions.Http.Resilience` is not referenced. A single DummyJSON blip fails every
+  in-flight request with no retry, and a sustained outage has every request burn the full 5s response
+  budget with no breaker to shed load — the standard route from a slow dependency to a saturated
+  thread pool. Add `.AddStandardResilienceHandler()`. **T3 is mandatory reading: the default
+  `client.Timeout` silently cancels the retries you just added.** Add `PooledConnectionLifetime`
+  while there, for DNS rotation.
+- [x] **S2 — Mark the cached records immutable.** *(Done.)* `HybridCache` returns the stored instance
+  from L1 only for types it can prove immutable; everything else is serialized on write and
+  **deserialized on every read**. Measured on 10.8.0: two hits on one key return two *different*
+  instances for a plain record, and the *same* instance once `[ImmutableObject(true)]` is applied — so
+  a cache hit on a 100-product page was deserializing 100 products with nested reviews, every time.
+  The attribute is now on `Product`, `ProductPage`, `Review`, `Meta` and `Dimensions`.
+
+  > Two details the obvious version misses. **T4:** the attribute makes the promise load-bearing, so
+  > `DummyProductMapper` now freezes every collection (`ImmutableArray.CreateRange`) — an
+  > `IReadOnlyList<T>` over a `List<T>` is a view, and the mapper's `.ToList()` calls were producing
+  > exactly that. **And the cached type has to be the marked one:** `PriceFilteredCandidatesAsync`
+  > cached `IReadOnlyList<Product>`, an interface no attribute can vouch for, so it would have kept
+  > deserializing. It now caches the `ProductPage` record instead.
+- [ ] **S3 — Close the caching coverage gap.** *(partly [inherited])* `ProductService.ListAsync:20`,
+  `GetByIdAsync:27` and `CategoriesAsync:65` call `source.*` directly; only filter and search route
+  through `IProductQueryCache`. This is faithful — `grep -rn "Cacheable" src/main/java/` returns three
+  annotations, all in `ProductQueryCache.java` — but two consequences are worth fixing rather than
+  inheriting:
+  - `GET /api/products/categories` hits the upstream on **every** request, for data that changes
+    approximately never. Cache with a long TTL.
+  - `GET /api/products?page=0&size=20` is uncached while `GET /api/products/filter?page=0&size=20`
+    returns byte-identical data *from cache* — `FilterAsync` with no category calls
+    `CategoryPageAsync(null, …)`, which calls `source.ListAsync`. Same upstream call, same result,
+    cached or not depending only on which URL the client picked. Route `ListAsync` through the
+    existing `queries.CategoryPageAsync(null, page, size, ct)`; the cached path already produces the
+    identical call. **T5: this moves the load-mode upstream-call counts.**
+  - Leaving `GetByIdAsync` uncached is defensible for freshness — say so in a comment rather than
+    leaving it looking like an oversight.
+- [ ] **S4 — Add `global.json`.** `Directory.Build.props:9` targets `net10.0`; a machine with SDK
+  8.0.300 fails all six projects with `NETSDK1045` and no indication of what is required. Pin the SDK
+  so the failure states its own fix. **T6 covers `rollForward` and placement.**
+- [x] **S5 — Enforce `MaxInMemoryCandidates` instead of narrating it.** *(Done.)* It logged a warning
+  suggesting someone *"consider pushing the price filter down"*, then materialized and cached the full
+  set anyway — a threshold that cannot stop anything is a log line, not a limit. It now logs at
+  `Error` and throws `UpstreamException`, surfacing as a 502 rather than an unbounded allocation
+  driven by upstream catalog size on a request a client can repeat. Covered by
+  `PriceFilteredCandidatesRefusesToLoadMoreThanTheInMemoryThreshold`.
+- [ ] **S6 — Correct the 401 detail on the challenge path.** `ApiSecurityExtensions.cs:91` renders
+  `"Invalid username or password."` for *every* challenge — missing header, expired token, bad
+  signature, deleted user. That wording is correct only for `POST /api/auth/login`. The enumeration
+  concern that justifies a generic message applies to the login path; the challenge path leaks nothing
+  by being accurate (`"Missing or invalid bearer token."`). **[inherited]** — the Java filter chain has
+  the same wording, so this moves shadow cases.
+- [ ] **S7 — Restrict CORS.** `Program.cs:65-66` allows any origin, header and method. Safe *because*
+  no cookies are involved, and the reasoning is written down — but any origin can drive the API with a
+  stolen token. Move to an allowlist. **T7: do not reflexively add `AllowCredentials` when you switch
+  to `WithOrigins`.**
+
+#### 6.3 Lower priority
+
+- [ ] **L1 — Surrogate-pair split in `TextUtils.Truncate:33`.** `text.Substring(0, budget)` cuts at a
+  UTF-16 index; an emoji straddling index 99 yields a lone surrogate, which `System.Text.Json` emits
+  as `U+FFFD`. **[inherited]** — Java's `substring` splits identically, so this is a *parity-breaking
+  correctness fix*. See T8.
+- [ ] **L2 — Document the case-insensitivity contract.** `ProductQueryCache.cs:39,45` passes the
+  *normalized* (lower-cased, trimmed) query to `SearchByNameAsync`. That is what makes the cache key
+  and the upstream call provably consistent — good — but it silently imposes case-insensitive search
+  on every future source, and `IProductSource.SearchByNameAsync` does not say so. State it on the
+  interface.
+- [ ] **L3 — Clear the stale post-bump comments.** `ApiDocumentationExtensions.cs:15-19` still says
+  *"On the net8.0 target … its document generator arrived in .NET 9"*. `CachingTests.cs:24-26` still
+  says *"HybridCache on this target framework exposes no clear-all (tag-based eviction arrived in
+  .NET 9)"* — it is available now, and the per-key eviction workaround is no longer needed. In a
+  codebase where the comments carry this much of the reasoning, stale ones cost more than usual.
+- [ ] **L4 — Reconsider `IProductSource`'s shape.** The boundary itself is airtight: the `Dummy*` DTOs
+  are `internal`, `DummyProductMapper` is the only type naming them, and `Core` does not reference
+  `Infrastructure` — a leak is a compile error, not a review catch. Two shape issues remain:
+  - `IProductSource.All = 0` encodes DummyJSON's own wire convention (`limit=0` means everything) into
+    the abstraction, and it passes straight through to the URL. Every future source must honour *"give
+    me the entire catalog in one call"* — precisely what a source large enough to need an abstraction
+    cannot do.
+  - Price range appears in none of the five signatures, so a source that filters on price natively
+    (SQL, Elasticsearch) has **no way to say so** and will be handed `limit=All` and filtered in
+    process memory. The abstraction is extensible for *swapping* sources but not for *capability*.
+
+    A query object fixes both, and changes no consumer:
+    ```csharp
+    public sealed record ProductQuery(
+        string? Category, string? NameContains,
+        decimal? MinPrice, decimal? MaxPrice,
+        int Skip, int Limit);
+
+    public sealed record ProductQueryResult(ProductPage Page, bool PriceFilterApplied);
+
+    Task<ProductQueryResult> QueryAsync(ProductQuery query, CancellationToken ct = default);
+    ```
+    `ProductService` then applies the in-memory price filter only when `PriceFilterApplied` is false —
+    DummyJSON keeps today's behaviour, a capable source skips the full fetch entirely, and neither the
+    endpoints nor the service change again.
+
+#### 6.4 Subtle traps
+
+Ordered by how quietly each one fails. **T1 is the only item here that can corrupt a response.**
+
+- **T1 — Quantizing the price key without quantizing the filter serves one client another's results.**
+  **Designed out rather than defended against — see the B2 note.** The trap was real for the
+  quantization approach this plan originally proposed: rounding `minPrice` in the key while
+  `MatchesPrice` still filtered on the unrounded value would make `10.011` and `10.014` share a key,
+  and the second caller would receive the first caller's result set — silently, with a 200, only on
+  colliding requests. Removing the bounds from the key entirely retires the whole class: the key
+  depends on the category alone, the bounds are applied per call, and the stated invariant (*"two
+  inputs share a key only when they also produce the same upstream call"*) holds trivially because the
+  upstream call never depended on them. `PriceBoundsStillFilterTheCachedCandidateSetPerCall` pins the
+  half that could still regress — that sharing one *fetch* must not become sharing one *answer*.
+- **T2 — `SizeLimit` counts bytes, not entries, and a limit in the wrong unit silently disables the
+  cache.** ~~Predicted: missing per-entry sizes make `MemoryCache` throw on every write.~~ **Measured,
+  and the prediction was wrong in a more dangerous direction.** Probed against
+  `Microsoft.Extensions.Caching.Hybrid` 10.8.0 (`SizeLimit` set, 200 keys, factory invocations
+  counted):
+
+  | `SizeLimit` | payload | retained |
+  |---|---|---|
+  | none | 512 B | 200/200 |
+  | **500** | 512 B | **0/200** |
+  | 100 000 | 512 B | 194/200 |
+  | 1 000 000 | 512 B | 200/200 |
+
+  HybridCache **does** size its L1 entries, so nothing throws and eviction works correctly — but the
+  budget is **bytes**. Caffeine's `maximumSize=500` counts *entries*; carried across verbatim it means
+  *500 bytes*, and the cache then retains nothing large enough to matter. No exception, no warning, no
+  log line — every request simply becomes a miss. **This passes CI**, because the existing cache
+  fixtures are empty `ProductPage`s small enough to fit under any limit, so the retention assertions
+  stay green while production caches nothing. Hence `MaximumSizeBytes`/`MaximumEntryBytes` (named for
+  their unit) and `AFullSizedPageIsRetainedUnderTheConfiguredSizeBound`, which uses a realistic
+  100-product page precisely so the unit error cannot hide behind a small fixture.
+- **T3 — `HttpClient.Timeout` silently cancels the retries added in S1.** `client.Timeout` applies to
+  the *whole* pipeline including every retry attempt, so the current
+  `Timeout = ResponseTimeoutMs (5s)` caps the standard handler's total budget at 5s and the retries
+  never fire — a resilience handler that appears configured, passes startup validation, and does
+  nothing. Hand the budget to the pipeline:
+  ```csharp
+  client.Timeout = Timeout.InfiniteTimeSpan;   // the pipeline owns timeouts now
+  // …
+  .AddStandardResilienceHandler(o =>
+  {
+      o.AttemptTimeout.Timeout      = TimeSpan.FromMilliseconds(options.ResponseTimeoutMs);
+      o.TotalRequestTimeout.Timeout = TimeSpan.FromMilliseconds(options.ResponseTimeoutMs * 3);
+      o.CircuitBreaker.SamplingDuration = TimeSpan.FromMilliseconds(options.ResponseTimeoutMs * 4);
+  });
+  ```
+  Second trap inside the first: the standard handler *validates* these against each other at startup
+  (sampling duration must be at least twice the attempt timeout, attempt must not exceed total).
+  Misordered values throw during options validation — which is the good outcome, but it looks like a
+  DI failure rather than a config one.
+- **T4 — `[ImmutableObject(true)]` promises deep immutability that `IReadOnlyList<T>` does not
+  provide.** The attribute makes `HybridCache` hand the *same instance* to every concurrent caller.
+  `Product.Tags` and `Product.Images` are `IReadOnlyList<string>`, and `DummyProductMapper` builds them
+  with `.ToList()` — `IReadOnlyList<T>` is a read-only *view* over a mutable `List<T>`, not an
+  immutable collection. Any consumer that casts back mutates the cached instance for every in-flight
+  request. Nothing cast back at the time, so S2 would have been safe *as of that commit* — precisely
+  the kind of safety that expires without warning. **Confirmed and addressed in S2:**
+  `DummyProductMapper.Freeze` now returns `ImmutableArray.CreateRange(...)` for tags, images and
+  reviews, and `ToPage` freezes `ProductPage.Items`, so the promise the attribute makes is
+  structurally true rather than circumstantially true. Any new source must do the same — the contract
+  is stated on `Product`.
+
+  A second half of this trap only appeared during implementation: **the cached type must itself be the
+  marked one.** `PriceFilteredCandidatesAsync` cached `IReadOnlyList<Product>` — an interface, which no
+  attribute can vouch for and which the cache therefore keeps deserializing however immutable the
+  *elements* are. Marking `Product` alone would have looked correct and changed nothing. It now caches
+  the `ProductPage` record.
+- **T5 — S3 intentionally moves the load-mode numbers, and the harness gates on them.**
+  `--mode load` asserts upstream-call counts (single-flight 1/1, warm 0/0, mixed corpus 253/253) and
+  exits non-zero on a difference. Routing `ListAsync` through the cache *reduces* .NET's upstream
+  calls below Java's — a real improvement that the harness will report as a parity failure. Update the
+  corpus expectations in the same commit and record it in the known-divergence list, or the next CI
+  run blocks on a fix working as designed. Same applies to S6 (`--mode shadow`, 401 body) and L1
+  (`--mode shadow`, truncated strings).
+- **T6 — `global.json` placement and `rollForward` both bite.** Default `rollForward` is
+  `latestPatch`, so pinning `"version": "10.0.302"` fails on a machine carrying 10.0.4xx — a pin
+  intended to *unblock* contributors instead blocks the ones who are more current. Use
+  `"rollForward": "latestFeature"`. Placement: a `global.json` in `dotnet/` is not seen by
+  `dotnet test` run from the repository root, and `Middleware.ShadowHarness` is invoked from there.
+  Put it at the repository root — it has no effect on the Maven build beside it.
+  ```json
+  { "sdk": { "version": "10.0.302", "rollForward": "latestFeature" } }
+  ```
+- **T7 — Restricting CORS is the moment someone adds `AllowCredentials`.** `AllowAnyOrigin` and
+  `AllowCredentials` are mutually exclusive, so the current config *cannot* express the dangerous
+  combination. Switching to `WithOrigins` removes that guardrail, and `AllowCredentials` is the
+  reflexive next addition when a browser client misbehaves. This API authenticates by bearer token and
+  needs no credentialed requests; adding it would newly enable cookie-driven CSRF against endpoints
+  that have never had to consider it. Restrict origins, leave credentials off, and say why in a
+  comment beside it.
+- **T8 — Fixing the surrogate split (L1) breaks parity by design.** Java's `substring` splits
+  surrogate pairs exactly as C#'s does, so the two services currently agree — including on the
+  mangled output. Correcting .NET creates a shadow-corpus divergence that is *correct*. Decide
+  explicitly: fix it and record a deliberate divergence, or leave it and record a known inherited
+  defect. Do not let it be settled by whichever choice makes the harness quieter. The same reasoning
+  applies to L2 if the lower-casing is ever changed.
+- **T9 — A "never seed outside Development" guard breaks the integration suite.**
+  `MiddlewareApiFactory.cs:63` hosts the app as `Environments.Staging`, and `WithSeedUser(...)` turns
+  the seeder on — so the obvious B1 hardening
+  (`if (seed.Enabled && !env.IsDevelopment()) throw`) fails host startup for
+  `SeededUserCanAuthenticateAgainstTheFreshlyCreatedSchema` and every test built on it. Gate on
+  something the tests can opt out of, or move the factory to `Environments.Development` and confirm
+  nothing else keys off the environment (`Program.cs:27` selects the console sink from it, and
+  `ThrowOnBadRequest` was set explicitly at `:61` *because* the framework default differs by
+  environment — that explicit setting is what makes the move safe).
+- **T10 — Removing the `demo1234` default breaks the documented startup path.** `.env.example` carries
+  `DB_USERNAME`, `DB_PASSWORD` and `JWT_SECRET` but no seed credentials, because they currently have
+  compose-level defaults. Switching them to `${VAR:?…}` without adding them to `.env.example` means
+  the documented `cp .env.example .env && docker compose up` fails on a fresh clone — trading a
+  security bug for an onboarding bug. Both files change together.
+
+**Acceptance criteria for Phase 6**
+- [ ] No credential with a committed or defaulted value can authenticate against any non-Development
+      configuration; verified by starting the compose stack with an empty `.env` and asserting it
+      refuses to start.
+- [ ] Cache memory is bounded by something other than the TTL, and a test drives the bound.
+- [ ] A price-filter request cannot trigger an unbounded number of distinct full-catalog fetches; a
+      test asserts that N requests with varying sub-cent bounds produce ≤ M upstream calls.
+- [ ] A test asserts the T1 invariant: inputs sharing a cache key produce the same filtered result.
+- [ ] Upstream failure injection (5xx, timeout, connection refused) shows retry and circuit-breaker
+      behaviour, and `--mode load` confirms the breaker opens rather than queueing.
+- [ ] `dotnet test` succeeds from a clean clone on a machine with no .NET 10 SDK **or** fails with a
+      message naming the required SDK version.
+- [ ] The .NET service is documented to the same standard as the Java one.
+- [ ] Every harness expectation changed by 6.1–6.3 is updated in the same commit as its change, with
+      the divergence recorded — no expectation is relaxed to make a run pass.
+
 ---
 
 ## 4. Testing & Feature Parity Strategy
@@ -430,9 +749,28 @@ Four complementary layers to **prove** identical behavior:
 | R4 | **Numeric type/precision mismatch.** `BigDecimal` prices decoded via `double` would shift price-filter boundaries and JSON output. | MED | Map prices to `decimal` end-to-end; bind price fields to `decimal` in `System.Text.Json` (custom converter if emitted as JSON numbers). Add boundary tests at `minPrice`/`maxPrice` (inclusive). |
 | R5 | **Schema/DDL divergence on cutover.** Hibernate `ddl-auto=update` tolerates drift; EF migrations are stricter and can fail or silently diverge against an existing volume. | MED | Generate the EF initial migration, diff against the live Hibernate schema before targeting a populated DB. Pin `role` to string conversion, `username` unique, identity generation. For real data, dump/reload `user_account` and verify BCrypt hashes still authenticate. |
 
+**R1–R5 are migration risks and are closed by Phases 1–5.** R6–R11 come from the pre-release review
+and are open; they are release risks in the shipped design, not porting risks.
+
+| # | Risk | Severity | Mitigation |
+|---|---|---|---|
+| R6 | **Known-credential account reachable in a Production-configured stack.** The documented compose startup publishes `demo`/`demo1234` on host port 8081 with `ASPNETCORE_ENVIRONMENT: Production`, contradicting the intent stated in `appsettings.json`. | **HIGH** | Phase 6 B1: make both seed values required (`${VAR:?…}`) as `JWT_SECRET` already is, and add them to `.env.example` (T10). Consider a startup guard, minding T9. |
+| R7 | **Cache-key space is attacker-controlled.** Sub-cent variation in `minPrice`/`maxPrice` produces unbounded distinct keys, each missing the cache, each triggering a full-catalog upstream fetch and retaining a full catalog copy for the TTL. Single-flight gives no protection — the keys differ by construction. | **HIGH** | Phase 6 B2 (quantize + cap) and B3 (bound the cache). Guard the fix with the T1 invariant test; the naïve version cross-contaminates responses. |
+| R8 | **Configured cache bound does not exist.** `Cache:MaximumSize` is bound, documented as the Caffeine `maximumSize=500` analog, and never read. The cache is bounded only by the 60s TTL, so the Java service's entry bound was silently dropped in the port. | **HIGH** | Phase 6 B3. Verify HybridCache sizes its L1 entries before setting `SizeLimit` (T2) — the naïve fix converts every cache write into a 500. |
+| R9 | **No upstream resilience.** No retry, circuit breaker or concurrency limit. A slow DummyJSON has every request burn the full 5s budget with nothing shedding load — the standard path from a slow dependency to a saturated thread pool. | MED-HIGH | Phase 6 S1 with `AddStandardResilienceHandler`. T3 is mandatory: the current `client.Timeout` cancels the retries before they run. |
+| R10 | **Cache hits pay full deserialization.** `HybridCache` bypasses serialization only for provably-immutable types; `Product`/`ProductPage` are not detected, so every hit deserializes up to 100 products with nested reviews — eroding the benefit the cache was added for. | MED | Phase 6 S2, with the collection members moved to `ImmutableArray<T>` rather than relying on nothing casting `IReadOnlyList<T>` back (T4). |
+| R11 | **Abstraction cannot express source capability.** `IProductSource` has no price parameter and uses DummyJSON's `limit=0`-means-everything convention, so a source that filters on price natively is still handed the whole catalog and filtered in memory. Extensible for *swapping* sources, not for *capability*. | MED | Phase 6 L4: replace the five fixed signatures with a `ProductQuery`/`ProductQueryResult` pair. No endpoint or service change; DummyJSON keeps today's behaviour. |
+
 ---
 
 *Bottom line: the port is well-scoped — one entity, a synchronous proxy, six endpoints.
 Effort concentrates in Phases 3–4 (cache + error/security parity), which is exactly where
 the top risks live. The existing test suite is the parity harness: porting it first turns
 each phase's acceptance criteria into runnable checks.*
+
+*Post-parity addendum: Phases 1–5 answered "does it behave like the Java service?" — yes, to 79/80
+shadow cases and a clean contract diff. Phase 6 answers "should it?" The parity harness is
+structurally unable to raise most of §6, because both services agree; three items are inherited
+rather than introduced, and clearing them will move harness numbers on purpose (T5, T8). The
+concentration is narrow and worth naming: the cache was designed for a small, fixed, trusted catalog,
+and its key space was never treated as adversarial input.*

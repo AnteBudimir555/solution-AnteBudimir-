@@ -17,8 +17,13 @@ public interface IProductQueryCache
 
     /// <summary>
     /// The full, already price-filtered candidate set for a price-filtered query (optionally scoped to
-    /// a category). Cached by category + price bounds only — independent of pagination.
+    /// a category). The underlying candidate set is cached by category alone — independent of both
+    /// pagination and the price bounds, which are applied in memory over the cached set.
     /// </summary>
+    /// <exception cref="Middleware.Core.Exceptions.UpstreamException">
+    /// if the source returns more candidates than <c>Upstream:MaxInMemoryCandidates</c> allows to be
+    /// filtered in memory.
+    /// </exception>
     ValueTask<IReadOnlyList<Product>> PriceFilteredCandidatesAsync(
         string? category, decimal? minPrice, decimal? maxPrice, CancellationToken ct = default);
 }
