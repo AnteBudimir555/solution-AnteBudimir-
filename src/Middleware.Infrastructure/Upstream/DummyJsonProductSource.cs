@@ -20,9 +20,11 @@ namespace Middleware.Infrastructure.Upstream;
 ///   (see <c>ProductService</c>); this source only exposes the primitives.</item>
 /// </list>
 ///
-/// <para>Wired as a typed <see cref="HttpClient"/> whose base address and connect/response timeouts
-/// come from <c>UpstreamOptions</c>, so a slow or unreachable upstream fails fast (surfacing as a 502)
-/// rather than hanging the request.</para>
+/// <para>Wired as a typed <see cref="HttpClient"/> whose base address, timeouts and resilience
+/// pipeline come from <c>UpstreamOptions</c>, so a slow or unreachable upstream fails fast (surfacing
+/// as a 502) rather than hanging the request. Retries, the circuit breaker and the timeouts all live
+/// in that pipeline, below this type: a transient blip is retried before <see cref="FetchAsync"/>
+/// ever sees it, and a shed request arrives here as an exception it translates like any other.</para>
 /// </summary>
 public sealed class DummyJsonProductSource(HttpClient httpClient, ILogger<DummyJsonProductSource> logger)
     : IProductSource

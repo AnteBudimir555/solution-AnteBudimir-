@@ -428,14 +428,15 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 
 ### Phase 6: Pre-Release Hardening — **OPEN**
 
-> **Status: in progress — all four release blockers are closed.** The cache cluster (B2, B3, S2,
-> S5), the SDK pin (S4), the .NET-only restructure that carried B4 with it, and the seed-credential
-> fix (B1) have landed. Remaining: S1, S3, S6, S7 and §6.3 — all severity High and below.
+> **Status: in progress — all four release blockers are closed, and S1 with them.** The cache cluster
+> (B2, B3, S2, S5), the SDK pin (S4), the .NET-only restructure that carried B4 with it, the
+> seed-credential fix (B1) and the upstream resilience pipeline (S1) have landed. Remaining: S3, S6,
+> S7 and §6.3 — all severity High and below.
 >
 > **Verified on SDK 10.0.302** — the version the pin records and the Phase 5 parity run used,
 > installed user-local to `~/.dotnet` after S4 landed. `dotnet build -c Release` is warning-free under
-> `TreatWarningsAsErrors`, and the suite is **136 passed, 0 failed, 0 skipped** (68 unit + 68
-> integration), up from the 133 baseline by exactly the three tests this work adds.
+> `TreatWarningsAsErrors`, and the suite is **146 passed, 0 failed, 0 skipped** (68 unit + 78
+> integration), up from the 139 baseline by exactly the seven tests S1 adds.
 >
 > `AFullSizedPageIsRetainedUnderTheConfiguredSizeBound` passes against the real host, which is the
 > point that matters for B3: the byte budget does retain a realistic 100-product page, so the unit
@@ -446,8 +447,11 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 > fewer upstream calls than Java. That expectation must be updated in the same commit that runs it,
 > not relaxed to make it pass.
 >
-> Two traps were settled empirically rather than by reasoning, and one of them was recorded wrongly in
-> this document — see T1, T2 and T4, all corrected in place with the measurements.
+> Several traps were settled empirically rather than by reasoning, and two of them were recorded
+> wrongly in this document — see T1, T2, T3 and T4, all corrected in place with the measurements.
+> T3 is the second prediction to be overturned by a probe: the framework had already handled the
+> thing the note warned about, and the *real* hazard turned out to be a registration-ordering one the
+> note did not describe.
 >
 > Phases 1–5 proved *parity*: the .NET service behaves as the Java one does.
 > A pre-release review (staff-level, security/performance/architecture) accepted that parity and then
@@ -556,14 +560,47 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 
 #### 6.2 Should-fix before release
 
-- [ ] **S1 — Add a resilience pipeline to the upstream client.** `UpstreamServiceCollectionExtensions`
-  registers a typed client with a base address, timeouts and decompression, and nothing else;
-  `Microsoft.Extensions.Http.Resilience` is not referenced. A single DummyJSON blip fails every
-  in-flight request with no retry, and a sustained outage has every request burn the full 5s response
-  budget with no breaker to shed load — the standard route from a slow dependency to a saturated
-  thread pool. Add `.AddStandardResilienceHandler()`. **T3 is mandatory reading: the default
-  `client.Timeout` silently cancels the retries you just added.** Add `PooledConnectionLifetime`
-  while there, for DNS rotation.
+- [x] **S1 — Add a resilience pipeline to the upstream client.** *(Done — and the trap it was
+  guarded against turned out not to exist on this version; see T3.)*
+  `UpstreamServiceCollectionExtensions` registered a typed client with a base address, timeouts and
+  decompression, and nothing else; `Microsoft.Extensions.Http.Resilience` was not referenced. A single
+  DummyJSON blip failed every in-flight request with no retry, and a sustained outage had every
+  request burn the full 5s response budget with no breaker to shed load. Now
+  `.AddStandardResilienceHandler()` on the same registration, plus `PooledConnectionLifetime` for DNS
+  rotation.
+
+  > **The budget was split rather than extended, which is a departure from the numbers T3 proposed.**
+  > T3 suggested attempt = `ResponseTimeoutMs` and total = `3 ×` it. Measured, that combination costs
+  > the *client*: with the library's stock 2s exponential backoff, a hard-down upstream took
+  > **7937 ms** to surface a 502 where it previously took ~5s at worst, and the proposed total would
+  > let it reach 15s. Instead `ResponseTimeoutMs` (5s, unchanged) is now the **total** budget and a
+  > new `AttemptTimeoutMs` (2s) bounds one attempt, with retries cut to 2 at a 200 ms base — the same
+  > failure surfaces in ~306 ms in the tuned shape. **Adding resilience did not make a dead upstream
+  > slower to report.** The cost, paid knowingly: an upstream that is *slow* rather than failing now
+  > gets roughly two and a half attempts inside the 5s rather than one attempt using all of it.
+
+  > **The stock circuit-breaker settings would have been decorative.** Defaults are
+  > `FailureRatio = 0.1` with `MinimumThroughput = 100` over 30s. Probed with retries disabled, the
+  > breaker opened at request **#101** — a service at this traffic level never reaches that in a
+  > window, so the breaker would have been configuration without behaviour. Shipped at `0.5` / `20`:
+  > at least twenty attempts seen and at least half failing. The ratio is *raised* from the default
+  > on purpose — for a proxy, the occasional upstream 5xx is weather, not an outage.
+
+  **Eight new `Upstream:*` keys, which is the main thing to argue with in review.** They are what
+  makes the pipeline testable — the breaker test sets `MinimumThroughput` to 4 rather than issuing a
+  hundred requests — and tunable without a rebuild. `UpstreamOptions` implements `IValidatableObject`
+  and is registered `ValidateOnStart()`, so `AttemptTimeoutMs ≥ ResponseTimeoutMs` or a too-short
+  sampling duration aborts the host naming the key. Without that the pipeline still rejects the
+  combination, but only when the typed client is first resolved — during a request, as a 500 that
+  reads like a DI fault (T3's second half, confirmed).
+
+  Covered by `UpstreamResilienceTests` (7 tests): transient blip retried to success, persistent
+  failure retried to exactly the configured bound, 404 not retried, `HttpClient.Timeout` is
+  `InfiniteTimeSpan`, the retry sequence outlasts one attempt, the breaker opens and then reaches the
+  upstream zero further times, and an unreachable upstream still surfaces as `UpstreamException`.
+  These are the first tests to exercise the **DI-wired** client at all: `MiddlewareApiFactory`
+  substitutes `IProductSource` outright, and `DummyJsonProductSourceTests` news up a bare
+  `HttpClient`, so the registration itself had no coverage.
 - [x] **S2 — Mark the cached records immutable.** *(Done.)* `HybridCache` returns the stored instance
   from L1 only for types it can prove immutable; everything else is serialized on write and
   **deserialized on every read**. Measured on 10.8.0: two hits on one key return two *different*
@@ -703,25 +740,49 @@ Ordered by how quietly each one fails. **T1 is the only item here that can corru
   stay green while production caches nothing. Hence `MaximumSizeBytes`/`MaximumEntryBytes` (named for
   their unit) and `AFullSizedPageIsRetainedUnderTheConfiguredSizeBound`, which uses a realistic
   100-product page precisely so the unit error cannot hide behind a small fixture.
-- **T3 — `HttpClient.Timeout` silently cancels the retries added in S1.** `client.Timeout` applies to
-  the *whole* pipeline including every retry attempt, so the current
-  `Timeout = ResponseTimeoutMs (5s)` caps the standard handler's total budget at 5s and the retries
-  never fire — a resilience handler that appears configured, passes startup validation, and does
-  nothing. Hand the budget to the pipeline:
-  ```csharp
-  client.Timeout = Timeout.InfiniteTimeSpan;   // the pipeline owns timeouts now
-  // …
-  .AddStandardResilienceHandler(o =>
-  {
-      o.AttemptTimeout.Timeout      = TimeSpan.FromMilliseconds(options.ResponseTimeoutMs);
-      o.TotalRequestTimeout.Timeout = TimeSpan.FromMilliseconds(options.ResponseTimeoutMs * 3);
-      o.CircuitBreaker.SamplingDuration = TimeSpan.FromMilliseconds(options.ResponseTimeoutMs * 4);
-  });
-  ```
-  Second trap inside the first: the standard handler *validates* these against each other at startup
-  (sampling duration must be at least twice the attempt timeout, attempt must not exceed total).
-  Misordered values throw during options validation — which is the good outcome, but it looks like a
-  DI failure rather than a config one.
+- **T3 — `HttpClient.Timeout` and the retries added in S1.**
+  ~~Predicted: `client.Timeout` applies to the whole pipeline including every retry attempt, so the
+  current `Timeout = ResponseTimeoutMs (5s)` caps the standard handler's total budget at 5s and the
+  retries never fire — a resilience handler that appears configured, passes startup validation, and
+  does nothing. Fix by setting `client.Timeout = Timeout.InfiniteTimeSpan`.~~
+  **Measured, and the prediction was wrong: `AddStandardResilienceHandler` already does this itself.**
+  Probed against `Microsoft.Extensions.Http.Resilience` 10.8.0, reading `HttpClient.Timeout` back off
+  the resolved client for the exact registration shape S1 touches
+  (`AddHttpClient<IProductSource, DummyJsonProductSource>(c => c.Timeout = …)` +
+  `ConfigurePrimaryHttpMessageHandler`):
+
+  | registration | resolved `HttpClient.Timeout` |
+  |---|---|
+  | no resilience handler, `Timeout = 5000ms` | `00:00:05` |
+  | `+ AddStandardResilienceHandler`, handler ordered either side of the primary handler | `-00:00:00.001` (`InfiniteTimeSpan`) |
+
+  The handler overwrites the configure action's value, so the retries were never at risk. Confirmed
+  behaviourally: against a 400 ms-delayed 500 with a 1s attempt timeout, **4 upstream hits in 1640 ms
+  whether `client.Timeout` was 1s or infinite** — the sequence ran straight through the 1s.
+
+  > **The trap is real but relocated: it is an ordering hazard, not a default.** A timeout applied
+  > *after* the handler wins, and does exactly what the original note predicted:
+  > ```
+  > resilience, then ConfigureHttpClient(c => c.Timeout = 500ms)
+  >     -> TaskCanceledException in 501ms, one attempt
+  > ```
+  > So S1 sets `client.Timeout = Timeout.InfiniteTimeSpan` anyway. It is belt-and-braces on 10.8.0,
+  > and it is labelled as such in the code rather than dressed up as the fix — the point is to state
+  > the intent and give `RetriesAreNotCancelledByAClientTimeout` an invariant to pin, so a future
+  > `ConfigureHttpClient` in the wrong position fails a test instead of quietly disabling retry.
+
+  **The second trap inside the first was right, and is worse than described.** The standard handler
+  does validate these against each other (sampling ≥ 2× attempt, attempt < total) with clear messages
+  — but *not at startup*. Options are resolved when the typed client is first created, which is
+  during a request, so a misordered config is a 500 on the first call rather than a boot failure.
+  S1 therefore validates the relationships on `UpstreamOptions` with `ValidateOnStart()`. Also
+  discovered here: `Retry.MaxRetryAttempts = 0` is rejected outright
+  (`must be between 1 and 2147483647`) — retry cannot be turned off that way, which matters for
+  anyone trying to disable it in a test.
+
+  A third finding worth carrying: the retry predicate is already correct for this service without
+  configuration — `408`, `429` and `5xx` are retried, `400`/`404`/`409` are not. The
+  `ProductNotFoundException` path is untouched by S1, and a test pins it.
 - **T4 — `[ImmutableObject(true)]` promises deep immutability that `IReadOnlyList<T>` does not
   provide.** The attribute makes `HybridCache` hand the *same instance* to every concurrent caller.
   `Product.Tags` and `Product.Images` are `IReadOnlyList<string>`, and `DummyProductMapper` builds them
@@ -827,8 +888,14 @@ Ordered by how quietly each one fails. **T1 is the only item here that can corru
 - [ ] A price-filter request cannot trigger an unbounded number of distinct full-catalog fetches; a
       test asserts that N requests with varying sub-cent bounds produce ≤ M upstream calls.
 - [ ] A test asserts the T1 invariant: inputs sharing a cache key produce the same filtered result.
-- [ ] Upstream failure injection (5xx, timeout, connection refused) shows retry and circuit-breaker
-      behaviour, and `--mode load` confirms the breaker opens rather than queueing.
+- [x] Upstream failure injection (5xx, timeout, connection refused) shows retry and circuit-breaker
+      behaviour, and `--mode load` confirms the breaker opens rather than queueing. *(Done for the
+      first half — `UpstreamResilienceTests` injects a transient 5xx, a persistent 5xx, a slow
+      response and an unreachable host against WireMock, and asserts the breaker opens and then
+      reaches the upstream zero further times. The `--mode load` half **cannot be met**: the harness
+      was deleted with the Java service (T5). The breaker assertion it would have carried is the one
+      in `TheCircuitBreakerOpensAndShedsLoadWithoutReachingTheUpstream`, which is a weaker claim —
+      it shows shedding, not behaviour under concurrent load.)*
 - [ ] `dotnet test` succeeds from a clean clone on a machine with no .NET 10 SDK **or** fails with a
       message naming the required SDK version.
 - [ ] The .NET service is documented to the same standard as the Java one.
@@ -881,7 +948,7 @@ and are open; they are release risks in the shipped design, not porting risks.
 | R6 | ~~**Known-credential account reachable in a Production-configured stack.** The documented compose startup publishes `demo`/`demo1234` with `ASPNETCORE_ENVIRONMENT: Production`, contradicting the intent stated in `appsettings.json`.~~ | ~~**HIGH**~~ **CLOSED** | Phase 6 B1, done. `SEED_USER_PASSWORD` is required via `${VAR:?…}`; `.env.example` declares it (and `JWT_SECRET`) with no value; `SeedUserOptions` fails start-up on blank credentials, so the non-Compose path is covered too. The proposed environment-gated startup guard was rejected — defeated by `ASPNETCORE_ENVIRONMENT`, and it triggers T9. |
 | R7 | **Cache-key space is attacker-controlled.** Sub-cent variation in `minPrice`/`maxPrice` produces unbounded distinct keys, each missing the cache, each triggering a full-catalog upstream fetch and retaining a full catalog copy for the TTL. Single-flight gives no protection — the keys differ by construction. | **HIGH** | Phase 6 B2 (quantize + cap) and B3 (bound the cache). Guard the fix with the T1 invariant test; the naïve version cross-contaminates responses. |
 | R8 | **Configured cache bound does not exist.** `Cache:MaximumSize` is bound, documented as the Caffeine `maximumSize=500` analog, and never read. The cache is bounded only by the 60s TTL, so the Java service's entry bound was silently dropped in the port. | **HIGH** | Phase 6 B3. Verify HybridCache sizes its L1 entries before setting `SizeLimit` (T2) — the naïve fix converts every cache write into a 500. |
-| R9 | **No upstream resilience.** No retry, circuit breaker or concurrency limit. A slow DummyJSON has every request burn the full 5s budget with nothing shedding load — the standard path from a slow dependency to a saturated thread pool. | MED-HIGH | Phase 6 S1 with `AddStandardResilienceHandler`. T3 is mandatory: the current `client.Timeout` cancels the retries before they run. |
+| R9 | ~~**No upstream resilience.** No retry, circuit breaker or concurrency limit. A slow DummyJSON has every request burn the full 5s budget with nothing shedding load — the standard path from a slow dependency to a saturated thread pool.~~ | ~~MED-HIGH~~ **CLOSED** | Phase 6 S1, done. `AddStandardResilienceHandler` on the typed client: 2 retries at a 200 ms exponential base, breaker at 0.5/20 over 30s, 1000-permit concurrency limit, attempt timeout 2s inside an unchanged 5s total. T3's premise did not hold — the handler sets `HttpClient.Timeout` to `InfiniteTimeSpan` itself — but the ordering hazard behind it is pinned by a test. Breaker and retry thresholds were both moved off the library defaults, which measurement showed would never have fired at this traffic level. |
 | R10 | **Cache hits pay full deserialization.** `HybridCache` bypasses serialization only for provably-immutable types; `Product`/`ProductPage` are not detected, so every hit deserializes up to 100 products with nested reviews — eroding the benefit the cache was added for. | MED | Phase 6 S2, with the collection members moved to `ImmutableArray<T>` rather than relying on nothing casting `IReadOnlyList<T>` back (T4). |
 | R11 | **Abstraction cannot express source capability.** `IProductSource` has no price parameter and uses DummyJSON's `limit=0`-means-everything convention, so a source that filters on price natively is still handed the whole catalog and filtered in memory. Extensible for *swapping* sources, not for *capability*. | MED | Phase 6 L4: replace the five fixed signatures with a `ProductQuery`/`ProductQueryResult` pair. No endpoint or service change; DummyJSON keeps today's behaviour. |
 

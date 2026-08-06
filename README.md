@@ -242,9 +242,17 @@ Configuration binds to typed options classes. Any key can be supplied by environ
 | `Jwt:ExpirationMinutes`          | `60`                        | Token lifetime                                |
 | `Jwt:Issuer`                     | `abysalto-middleware`       | Issued and enforced on validation             |
 | `Upstream:BaseUrl`               | `https://dummyjson.com`     | Upstream source base URL                      |
-| `Upstream:ConnectTimeoutMs`      | `3000`                      | Upstream connect timeout                      |
-| `Upstream:ResponseTimeoutMs`     | `5000`                      | Upstream response timeout                     |
+| `Upstream:ConnectTimeoutMs`      | `3000`                      | TCP/TLS connect timeout                       |
+| `Upstream:ResponseTimeoutMs`     | `5000`                      | Budget for the **whole** call including retries |
+| `Upstream:AttemptTimeoutMs`      | `2000`                      | Budget for one attempt; must be < `ResponseTimeoutMs` |
 | `Upstream:MaxInMemoryCandidates` | `5000`                      | Ceiling on an in-memory price filter; exceeding it fails the request |
+| `Upstream:RetryAttempts`         | `2`                         | Retries after the first attempt (minimum `1`) |
+| `Upstream:RetryBaseDelayMs`      | `200`                       | First retry delay; exponential with jitter after |
+| `Upstream:CircuitBreakerFailureRatio` | `0.5`                  | Failing share of attempts that opens the breaker |
+| `Upstream:CircuitBreakerMinimumThroughput` | `20`              | Attempts needed in the window before the ratio applies |
+| `Upstream:CircuitBreakerSamplingDurationMs` | `30000`          | Window the ratio is measured over; must be ≥ 2× `AttemptTimeoutMs` |
+| `Upstream:CircuitBreakerBreakDurationMs` | `5000`                | How long the breaker sheds load before probing again |
+| `Upstream:PooledConnectionLifetimeMinutes` | `5`               | Connection recycling, so upstream DNS changes are picked up |
 | `Cache:MaximumSizeBytes`         | `67108864` (64 MiB)         | Total cache byte budget (**bytes, not entries**) |
 | `Cache:MaximumEntryBytes`        | `1048576` (1 MiB)           | Largest single cacheable entry                |
 | `Cache:ExpireAfterWriteSeconds`  | `60`                        | Entry TTL                                     |
@@ -302,6 +310,33 @@ Filters are pushed to the upstream where DummyJSON supports it, and applied in-s
 Category and price filters are **combinable**: the category is pushed down, then the price range is
 applied to the returned candidate set. If that set exceeds `Upstream:MaxInMemoryCandidates` the
 request fails with a `502` rather than materializing an unbounded catalog in memory.
+
+---
+
+## Upstream resilience
+
+The typed upstream client carries a Polly pipeline (`AddStandardResilienceHandler`): concurrency
+limit → total timeout → retry → circuit breaker → attempt timeout.
+
+- **Retry** — 2 retries after the first attempt, 200 ms base, exponential with jitter. Every upstream
+  call is a `GET`, so retrying is safe. Transient statuses only: `408`, `429` and `5xx` are retried,
+  `404` is not — a missing product is an answer, and retrying it would triple the upstream cost of a
+  request any client can repeat.
+- **Circuit breaker** — opens once half the attempts in a 30 s window fail, with at least 20 attempts
+  seen, then sheds load for 5 s before probing again. Both thresholds are deliberately away from the
+  library defaults (`0.1` / `100`): at this traffic level a 100-attempt threshold would never be
+  reached, and a 10% ratio treats ordinary upstream weather as an outage.
+- **Two timeouts, and the split is the point.** `ResponseTimeoutMs` bounds the whole call *including*
+  retries, and is unchanged from before the pipeline existed; `AttemptTimeoutMs` bounds one attempt.
+  Retries fit inside the worst case clients already faced, so **adding resilience did not make a dead
+  upstream slower to report**. The cost paid for that: an upstream that is slow rather than failing
+  gets roughly two and a half attempts before the total timeout cuts the sequence off.
+- **`HttpClient.Timeout` is `InfiniteTimeSpan`** — the pipeline owns timeouts. A client timeout
+  applied after the resilience handler overrides it and silently caps the whole retry sequence at one
+  attempt; `RetriesAreNotCancelledByAClientTimeout` pins this.
+
+Everything the pipeline gives up on — retries exhausted, breaker open, timeout — reaches
+`DummyJsonProductSource` as an exception and surfaces as a `502`, the same as before.
 
 ---
 
