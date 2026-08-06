@@ -27,7 +27,8 @@ public class ProductServiceTests
     public async Task ListMapsPageToSummariesWithPaginationMetadata()
     {
         var items = new List<Product> { TestData.Product(1, 10m), TestData.Product(2, 20m) };
-        _source.ListAsync(0, 20, Arg.Any<CancellationToken>()).Returns(new ProductPage(items, 42, 0, 20));
+        _queries.CategoryPageAsync(null, 0, 20, Arg.Any<CancellationToken>())
+            .Returns(new ProductPage(items, 42, 0, 20));
 
         var response = await Service().ListAsync(0, 20);
 
@@ -40,13 +41,35 @@ public class ProductServiceTests
     }
 
     [Fact]
-    public async Task ListTranslatesPageIndexToOffset()
+    public async Task ListPassesThePageThroughToTheCacheUntranslated()
     {
-        _source.ListAsync(40, 20, Arg.Any<CancellationToken>()).Returns(new ProductPage([], 100, 40, 20));
+        _queries.CategoryPageAsync(null, 2, 20, Arg.Any<CancellationToken>())
+            .Returns(new ProductPage([], 100, 40, 20));
 
         await Service().ListAsync(2, 20);
 
-        await _source.Received(1).ListAsync(40, 20, Arg.Any<CancellationToken>());
+        // The page->offset translation moved into the cache with the routing; the service must not
+        // apply it twice.
+        await _queries.Received(1).CategoryPageAsync(null, 2, 20, Arg.Any<CancellationToken>());
+        Assert.Empty(_source.ReceivedCalls());
+    }
+
+    /// <summary>
+    /// The point of routing the plain listing through the cache (MIGRATION_PLAN S3): an unfiltered
+    /// <c>/filter</c> call and a <c>/products</c> call are the same upstream request, so they must not
+    /// differ in whether they are cached. Same collaborator, same arguments, one entry.
+    /// </summary>
+    [Fact]
+    public async Task ListAndAnUnfilteredFilterIssueTheSameCachedQuery()
+    {
+        _queries.CategoryPageAsync(null, 1, 20, Arg.Any<CancellationToken>())
+            .Returns(new ProductPage([], 0, 20, 20));
+        var service = Service();
+
+        await service.ListAsync(1, 20);
+        await service.FilterAsync(null, null, null, 1, 20);
+
+        await _queries.Received(2).CategoryPageAsync(null, 1, 20, Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -117,11 +140,29 @@ public class ProductServiceTests
     }
 
     [Fact]
-    public async Task CategoriesDelegatesToSource()
+    public async Task CategoriesDelegatesToTheCacheRatherThanTheSource()
     {
-        _source.CategoriesAsync(Arg.Any<CancellationToken>())
+        _queries.CategoriesAsync(Arg.Any<CancellationToken>())
             .Returns((IReadOnlyList<string>)new[] { "beauty", "laptops" });
 
         Assert.Equal(new[] { "beauty", "laptops" }, await Service().CategoriesAsync());
+        Assert.Empty(_source.ReceivedCalls());
+    }
+
+    /// <summary>
+    /// Detail lookups stay uncached on purpose (see the note on <c>GetByIdAsync</c>): a stale page
+    /// costs a client little, a stale price or stock count can cost it an order. Pinned so the
+    /// decision is visible if someone later routes this through the cache too.
+    /// </summary>
+    [Fact]
+    public async Task GetByIdGoesStraightToTheSource()
+    {
+        _source.GetByIdAsync(7, Arg.Any<CancellationToken>())
+            .Returns(TestData.Product(7, "Camera", "desc", 99m, "photo"));
+
+        await Service().GetByIdAsync(7);
+
+        await _source.Received(1).GetByIdAsync(7, Arg.Any<CancellationToken>());
+        Assert.Empty(_queries.ReceivedCalls());
     }
 }

@@ -256,6 +256,7 @@ Configuration binds to typed options classes. Any key can be supplied by environ
 | `Cache:MaximumSizeBytes`         | `67108864` (64 MiB)         | Total cache byte budget (**bytes, not entries**) |
 | `Cache:MaximumEntryBytes`        | `1048576` (1 MiB)           | Largest single cacheable entry                |
 | `Cache:ExpireAfterWriteSeconds`  | `60`                        | Entry TTL                                     |
+| `Cache:CategoriesExpireAfterWriteSeconds` | `3600`             | TTL for the category list, which ages far more slowly |
 | `Summary:DescriptionMaxLength`   | `100`                       | `shortDescription` cap                        |
 | `Security:SeedUser:Enabled`      | `false`                     | Create the seed user on startup               |
 | `Security:SeedUser:Username`     | —                           | Seed user name (required when enabled)        |
@@ -290,8 +291,26 @@ Repeated **search** and **filter** calls with the same parameters are served fro
   collections are frozen at the mapper, so the cache can hand one instance to every caller instead of
   deserializing the entry on each hit.
 
-Note that `/api/products`, `/api/products/{id}` and `/api/products/categories` are **not** cached
-today. See Phase 6 **S3** in `MIGRATION_PLAN.md`.
+**What is and is not cached:**
+
+| Endpoint | Cached | TTL |
+|---|---|---|
+| `GET /api/products` | yes — shares its entry with an unfiltered `/filter` | `Cache:ExpireAfterWriteSeconds` |
+| `GET /api/products/filter` | yes | `Cache:ExpireAfterWriteSeconds` |
+| `GET /api/products/search` | yes | `Cache:ExpireAfterWriteSeconds` |
+| `GET /api/products/categories` | yes | `Cache:CategoriesExpireAfterWriteSeconds` |
+| `GET /api/products/{id}` | **no** — deliberately | — |
+
+The listing and an unfiltered `/filter` issue the identical upstream call, so they share one entry;
+serving byte-identical data from cache or not depending on which URL the client picked was arbitrary.
+
+Categories get a TTL of their own because they age differently: product pages go stale as stock and
+prices move, whereas the set of categories a source exposes changes approximately never.
+
+`GET /api/products/{id}` stays uncached on purpose. A product's own record is what a client reads
+before acting on it, and stock and price are exactly the fields most likely to have moved — a stale
+page costs a client little, a stale detail can cost it an order. Revisit only alongside a way to
+invalidate the entry.
 
 ---
 

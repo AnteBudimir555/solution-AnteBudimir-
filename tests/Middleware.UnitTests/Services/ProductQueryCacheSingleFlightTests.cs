@@ -30,6 +30,7 @@ public class ProductQueryCacheSingleFlightTests
         var hybrid = services.BuildServiceProvider().GetRequiredService<HybridCache>();
         _cache = new ProductQueryCache(_source, hybrid,
             Options.Create(new UpstreamOptions { MaxInMemoryCandidates = 5000 }),
+            Options.Create(new CacheOptions()),
             NullLogger<ProductQueryCache>.Instance);
     }
 

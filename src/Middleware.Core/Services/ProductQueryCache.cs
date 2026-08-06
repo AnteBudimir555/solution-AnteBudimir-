@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -32,9 +33,17 @@ public sealed class ProductQueryCache(
     IProductSource source,
     HybridCache cache,
     IOptions<UpstreamOptions> options,
+    IOptions<CacheOptions> cacheOptions,
     ILogger<ProductQueryCache> logger) : IProductQueryCache
 {
     private readonly int _maxInMemoryCandidates = options.Value.MaxInMemoryCandidates;
+
+    /// <summary>The one entry that opts out of the registered default TTL — see <see cref="CategoriesAsync"/>.</summary>
+    private readonly HybridCacheEntryOptions _categoriesEntryOptions = new()
+    {
+        Expiration = TimeSpan.FromSeconds(cacheOptions.Value.CategoriesExpireAfterWriteSeconds),
+        LocalCacheExpiration = TimeSpan.FromSeconds(cacheOptions.Value.CategoriesExpireAfterWriteSeconds)
+    };
 
     /// <summary>One page of name-search results (pagination pushed down to the source).</summary>
     public async ValueTask<ProductPage> SearchAsync(string? query, int page, int size, CancellationToken ct = default)
@@ -129,6 +138,26 @@ public sealed class ProductQueryCache(
         }
 
         return candidates;
+    }
+
+    /// <summary>
+    /// The category list, cached under a long TTL of its own.
+    ///
+    /// <para>Cached as a <see cref="CategoryList"/> rather than the bare collection for the same reason
+    /// <see cref="CandidatesAsync"/> caches a <see cref="ProductPage"/>: only a concrete type carrying
+    /// <c>[ImmutableObject(true)]</c> lets the cache return the stored instance instead of deserializing
+    /// on every hit. The names are frozen on the way in, because that attribute is a promise.</para>
+    /// </summary>
+    public async ValueTask<IReadOnlyList<string>> CategoriesAsync(CancellationToken ct = default)
+    {
+        var cached = await cache.GetOrCreateAsync(
+            CacheKeys.Categories,
+            source,
+            static async (src, token) =>
+                new CategoryList(ImmutableArray.CreateRange(await src.CategoriesAsync(token))),
+            _categoriesEntryOptions,
+            cancellationToken: ct);
+        return cached.Names;
     }
 
     private static int Offset(int page, int size) => page * size;

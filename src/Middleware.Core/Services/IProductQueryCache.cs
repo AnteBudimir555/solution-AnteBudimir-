@@ -26,4 +26,11 @@ public interface IProductQueryCache
     /// </exception>
     ValueTask<IReadOnlyList<Product>> PriceFilteredCandidatesAsync(
         string? category, decimal? minPrice, decimal? maxPrice, CancellationToken ct = default);
+
+    /// <summary>
+    /// The category identifiers the source exposes, cached under its own long TTL
+    /// (<c>Cache:CategoriesExpireAfterWriteSeconds</c>) rather than the general one — the answer
+    /// changes approximately never.
+    /// </summary>
+    ValueTask<IReadOnlyList<string>> CategoriesAsync(CancellationToken ct = default);
 }

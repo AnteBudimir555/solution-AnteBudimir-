@@ -428,15 +428,15 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 
 ### Phase 6: Pre-Release Hardening — **OPEN**
 
-> **Status: in progress — all four release blockers are closed, and S1 with them.** The cache cluster
-> (B2, B3, S2, S5), the SDK pin (S4), the .NET-only restructure that carried B4 with it, the
-> seed-credential fix (B1) and the upstream resilience pipeline (S1) have landed. Remaining: S3, S6,
-> S7 and §6.3 — all severity High and below.
+> **Status: in progress — all four release blockers are closed, and S1 and S3 with them.** The cache
+> cluster (B2, B3, S2, S5), the SDK pin (S4), the .NET-only restructure that carried B4 with it, the
+> seed-credential fix (B1), the upstream resilience pipeline (S1) and the caching coverage gap (S3)
+> have landed. Remaining: S6, S7 and §6.3 (L3 half-done) — all severity High and below.
 >
 > **Verified on SDK 10.0.302** — the version the pin records and the Phase 5 parity run used,
 > installed user-local to `~/.dotnet` after S4 landed. `dotnet build -c Release` is warning-free under
-> `TreatWarningsAsErrors`, and the suite is **146 passed, 0 failed, 0 skipped** (68 unit + 78
-> integration), up from the 139 baseline by exactly the seven tests S1 adds.
+> `TreatWarningsAsErrors`, and the suite is **152 passed, 0 failed, 0 skipped** (72 unit + 80
+> integration), up from the 139 baseline by the seven tests S1 adds and the six S3 adds.
 >
 > `AFullSizedPageIsRetainedUnderTheConfiguredSizeBound` passes against the real host, which is the
 > point that matters for B3: the byte budget does retain a realistic 100-product page, so the unit
@@ -554,9 +554,9 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 
   > Two things it stated rather than hid, because a README that omits them is worse than none: the
   > Compose stack's then-open B1 problem carried a warning against exposing it, and the endpoints
-  > that are *not* cached (S3) are named as such. The B1 warning has since been replaced by the
-  > fixed instructions — the README no longer warns about it because there is nothing left to warn
-  > about. The S3 note stands.
+  > that are *not* cached (S3) are named as such. Both have since been overtaken by their fixes: the
+  > B1 warning is replaced by the corrected instructions, and the S3 note is replaced by a table of
+  > what is cached, with which TTL, and the one endpoint that is deliberately not.
 
 #### 6.2 Should-fix before release
 
@@ -614,21 +614,43 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
   > exactly that. **And the cached type has to be the marked one:** `PriceFilteredCandidatesAsync`
   > cached `IReadOnlyList<Product>`, an interface no attribute can vouch for, so it would have kept
   > deserializing. It now caches the `ProductPage` record instead.
-- [ ] **S3 — Close the caching coverage gap.** *(partly [inherited])* `ProductService.ListAsync:20`,
-  `GetByIdAsync:27` and `CategoriesAsync:65` call `source.*` directly; only filter and search route
-  through `IProductQueryCache`. This is faithful — `grep -rn "Cacheable" src/main/java/` returns three
-  annotations, all in `ProductQueryCache.java` — but two consequences are worth fixing rather than
-  inheriting:
-  - `GET /api/products/categories` hits the upstream on **every** request, for data that changes
-    approximately never. Cache with a long TTL.
-  - `GET /api/products?page=0&size=20` is uncached while `GET /api/products/filter?page=0&size=20`
-    returns byte-identical data *from cache* — `FilterAsync` with no category calls
-    `CategoryPageAsync(null, …)`, which calls `source.ListAsync`. Same upstream call, same result,
-    cached or not depending only on which URL the client picked. Route `ListAsync` through the
-    existing `queries.CategoryPageAsync(null, page, size, ct)`; the cached path already produces the
-    identical call. **T5: this moves the load-mode upstream-call counts.**
-  - Leaving `GetByIdAsync` uncached is defensible for freshness — say so in a comment rather than
-    leaving it looking like an oversight.
+- [x] **S3 — Close the caching coverage gap.** *(Done — all three parts, as proposed.)*
+  *(partly [inherited])* `ProductService.ListAsync`, `GetByIdAsync` and `CategoriesAsync` called
+  `source.*` directly; only filter and search routed through `IProductQueryCache`. That was faithful —
+  `grep -rn "Cacheable" src/main/java/` returned three annotations, all in `ProductQueryCache.java` —
+  but two consequences were worth fixing rather than inheriting:
+  - `GET /api/products/categories` hit the upstream on **every** request, for data that changes
+    approximately never. Now cached via a new `IProductQueryCache.CategoriesAsync` under its own
+    `Cache:CategoriesExpireAfterWriteSeconds` (1h), separate from the general 60s TTL because the two
+    age differently — a product page goes stale as stock and price move, a category list does not.
+  - `GET /api/products?page=0&size=20` was uncached while `GET /api/products/filter?page=0&size=20`
+    returned byte-identical data *from cache*. `ListAsync` now routes through
+    `queries.CategoryPageAsync(null, page, size, ct)`, which issues the identical `source.ListAsync`
+    call, so the two share one entry. **T5 is moot — the harness is gone.**
+  - `GetByIdAsync` stays uncached, now with the reasoning written down on the method rather than
+    looking like an oversight, and pinned by `GetByIdGoesStraightToTheSource` so the decision is
+    visible if someone later routes it through the cache.
+
+  > **The category list needed a wrapper record, and the intuitive choice would have been wrong.**
+  > Per S2/T4 the cache returns the stored instance only for a type carrying
+  > `[ImmutableObject(true)]`. Probed on Hybrid 10.8.0 with reference identity across two hits:
+  > `IReadOnlyList<string>`, `string[]`, an unmarked record and — the one that looks safest —
+  > **`ImmutableArray<string>`** all return a *different* instance per hit; only the marked record
+  > returns the same one. Hence `CategoryList`, with its names frozen on the way in.
+
+  **The real cost landed in the tests, not the code.** Caching three more endpoints made cache state a
+  cross-test concern: `UpstreamFailureIsReportedAs502` and `UnexpectedFailureIsReportedAsAGeneric500`
+  both began passing on a warm entry written by an earlier test, never consulting the substitute they
+  had just configured to throw. Both suites now clear the cache in `InitializeAsync` alongside
+  `ClearSubstitute`. Any future test that stubs a failure on a cached endpoint has the same
+  requirement — that is the standing consequence of this item.
+
+  > **`HybridCache` does have a clear-all, and it is `RemoveByTagAsync("*")`.** Measured: it evicts
+  > entries written with **no tags at all**, so nothing in production had to be tagged for tests to
+  > reset state. `CachingTests` therefore drops the hand-maintained key list it carried — which was
+  > itself a trap, since a test touching a key nobody remembered to add would silently inherit the
+  > previous test's entry. This retires the `CachingTests.cs` half of **L3**; the
+  > `ApiDocumentationExtensions.cs` half is still open.
 - [x] **S4 — Add `global.json`.** *(Done.)* `Directory.Build.props` targets `net10.0`; a machine with
   SDK 8.0.300 failed all six projects with `NETSDK1045` and no indication of what was required. The
   pin is at the **repository root** (T6: a `global.json` in `dotnet/` is invisible to `dotnet test`
@@ -674,11 +696,14 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
   and the upstream call provably consistent — good — but it silently imposes case-insensitive search
   on every future source, and `IProductSource.SearchByNameAsync` does not say so. State it on the
   interface.
-- [ ] **L3 — Clear the stale post-bump comments.** `ApiDocumentationExtensions.cs:15-19` still says
-  *"On the net8.0 target … its document generator arrived in .NET 9"*. `CachingTests.cs:24-26` still
-  says *"HybridCache on this target framework exposes no clear-all (tag-based eviction arrived in
-  .NET 9)"* — it is available now, and the per-key eviction workaround is no longer needed. In a
-  codebase where the comments carry this much of the reasoning, stale ones cost more than usual.
+- [ ] **L3 — Clear the stale post-bump comments.** *(Half done, in S3.)*
+  `ApiDocumentationExtensions.cs:15-19` still says *"On the net8.0 target … its document generator
+  arrived in .NET 9"* — **still open**. ~~`CachingTests.cs:24-26` still says *"HybridCache on this
+  target framework exposes no clear-all (tag-based eviction arrived in .NET 9)"* — it is available
+  now, and the per-key eviction workaround is no longer needed.~~ **Done in S3**, which needed the
+  clear-all: the claim was verified (`RemoveByTagAsync("*")` evicts even untagged entries) and the
+  per-key list is gone. In a codebase where the comments carry this much of the reasoning, stale ones
+  cost more than usual — this one had been standing in for a capability the tests actually needed.
 - [ ] **L4 — Reconsider `IProductSource`'s shape.** The boundary itself is airtight: the `Dummy*` DTOs
   are `internal`, `DummyProductMapper` is the only type naming them, and `Core` does not reference
   `Infrastructure` — a leak is a compile error, not a review catch. Two shape issues remain:

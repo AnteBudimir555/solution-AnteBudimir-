@@ -31,4 +31,12 @@ public sealed class CacheOptions
     public long MaximumEntryBytes { get; set; } = 1024 * 1024;
 
     public int ExpireAfterWriteSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// TTL for the category list, which gets its own because it ages differently from everything else
+    /// here: product pages go stale as stock and prices move, whereas the set of categories a source
+    /// exposes changes approximately never. The general 60s TTL would have this endpoint hit the
+    /// upstream roughly once a minute forever to re-learn the same answer.
+    /// </summary>
+    public int CategoriesExpireAfterWriteSeconds { get; set; } = 3600;
 }

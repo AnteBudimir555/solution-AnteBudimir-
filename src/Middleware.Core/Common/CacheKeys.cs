@@ -39,4 +39,11 @@ public static class CacheKeys
     /// </summary>
     public static string FilterCandidates(string? category) =>
         "cand|" + NormalizeText(category);
+
+    /// <summary>
+    /// Key for the category list. It takes no parameters — there is exactly one such list — so it is a
+    /// constant rather than a builder, and it carries a prefix like the rest so the key spaces stay
+    /// disjoint.
+    /// </summary>
+    public const string Categories = "cats|";
 }

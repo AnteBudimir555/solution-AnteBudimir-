@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.DependencyInjection;
 using Middleware.Core.Abstractions;
-using Middleware.Core.Common;
 using Middleware.Core.Domain;
 using Middleware.Core.Services;
 using Middleware.IntegrationTests.Support;
@@ -22,21 +21,16 @@ public sealed class CachingTests(MiddlewareApiFactory factory)
     : IClassFixture<MiddlewareApiFactory>, IAsyncLifetime
 {
     /// <summary>
-    /// The analog of the Java test's <c>clearCaches</c>. HybridCache on this target framework exposes no
-    /// clear-all (tag-based eviction arrived in .NET 9), so each entry these tests touch is evicted by
-    /// its exact key — built through <see cref="CacheKeys"/>, the same way the cache builds it.
+    /// The analog of the Java test's <c>clearCaches</c>. This used to evict each entry by its exact
+    /// key, because the comment here claimed HybridCache exposed no clear-all on this target — it does
+    /// (see <see cref="MiddlewareApiFactory.ClearCachesAsync"/>), and the key list was both
+    /// unnecessary and a trap: a test touching a key nobody remembered to add would silently inherit
+    /// the previous test's entry.
     /// </summary>
     public async Task InitializeAsync()
     {
         factory.Source.ClearSubstitute(ClearOptions.All);
-
-        var cache = factory.Services.GetRequiredService<HybridCache>();
-        await cache.RemoveAsync(
-        [
-            CacheKeys.Search("phone", 0, 20),
-            CacheKeys.Search("bulky", 0, 100),
-            CacheKeys.FilterCandidates(null)
-        ]);
+        await factory.ClearCachesAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -80,6 +74,42 @@ public sealed class CachingTests(MiddlewareApiFactory factory)
         await InScopeAsync(q => q.PriceFilteredCandidatesAsync(null, null, null));
 
         await factory.Source.Received(1).ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// MIGRATION_PLAN S3, over the real host rather than a substituted collaborator: the plain listing
+    /// and an unfiltered <c>/filter</c> are the same upstream request, so they must share one entry.
+    /// Before this they did not — identical bytes were served from cache or fetched afresh depending
+    /// only on which URL the client happened to pick.
+    /// </summary>
+    [Fact]
+    public async Task TheListingAndAnUnfilteredFilterShareOneUpstreamCall()
+    {
+        factory.Source.ListAsync(0, 20, Arg.Any<CancellationToken>())
+            .Returns(new ProductPage([], 0, 0, 20));
+
+        await InScopeAsync(q => q.CategoryPageAsync(null, 0, 20));
+        await InScopeAsync(q => q.CategoryPageAsync(null, 0, 20));
+
+        await factory.Source.Received(1).ListAsync(0, 20, Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The category list is cached under a TTL of its own, so the endpoint stops asking the upstream
+    /// on every request for an answer that changes approximately never.
+    /// </summary>
+    [Fact]
+    public async Task RepeatedCategoryListingHitsUpstreamOnce()
+    {
+        factory.Source.CategoriesAsync(Arg.Any<CancellationToken>())
+            .Returns((IReadOnlyList<string>)new[] { "beauty", "laptops" });
+
+        var first = await InScopeAsync(q => q.CategoriesAsync());
+        var second = await InScopeAsync(q => q.CategoriesAsync());
+
+        Assert.Equal(new[] { "beauty", "laptops" }, first);
+        Assert.Equal(new[] { "beauty", "laptops" }, second);
+        await factory.Source.Received(1).CategoriesAsync(Arg.Any<CancellationToken>());
     }
 
     /// <summary>

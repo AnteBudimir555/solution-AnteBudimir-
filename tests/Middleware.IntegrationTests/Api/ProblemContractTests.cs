@@ -26,6 +26,9 @@ public sealed class ProblemContractTests(MiddlewareApiFactory factory)
     public async Task InitializeAsync()
     {
         factory.Source.ClearSubstitute(ClearOptions.All);
+        // Clearing the substitute is only half of it now that the listing and category endpoints are
+        // cached: a warm entry answers without the substitute being consulted at all.
+        await factory.ClearCachesAsync();
         await factory.ResetUsersAsync(Username, Password);
     }
 

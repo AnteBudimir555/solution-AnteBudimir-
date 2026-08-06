@@ -35,7 +35,7 @@ public class ProductQueryCacheTests
 
     private ProductQueryCache WithThreshold(int threshold) =>
         new(_source, _cache, Options.Create(new UpstreamOptions { MaxInMemoryCandidates = threshold }),
-            NullLogger<ProductQueryCache>.Instance);
+            Options.Create(new CacheOptions()), NullLogger<ProductQueryCache>.Instance);
 
     [Fact]
     public async Task SearchNormalizesQueryAndTranslatesOffset()
@@ -147,6 +147,41 @@ public class ProductQueryCacheTests
         }
 
         await _source.Received(1).ListAsync(0, IProductSource.All, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CategoriesAreFetchedOnceAndReturnedVerbatim()
+    {
+        _source.CategoriesAsync(Arg.Any<CancellationToken>())
+            .Returns((IReadOnlyList<string>)new[] { "beauty", "laptops" });
+        var cache = Cache();
+
+        var first = await cache.CategoriesAsync();
+        var second = await cache.CategoriesAsync();
+
+        Assert.Equal(new[] { "beauty", "laptops" }, first);
+        Assert.Equal(new[] { "beauty", "laptops" }, second);
+        await _source.Received(1).CategoriesAsync(Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The categories entry is cached as a marked record so the cache can hand back the stored
+    /// instance instead of deserializing on every hit. Measured on Hybrid 10.8.0, the obvious
+    /// alternatives — the bare <c>IReadOnlyList&lt;string&gt;</c>, <c>string[]</c>, an unmarked record,
+    /// even <c>ImmutableArray&lt;string&gt;</c> — all return a fresh instance per hit. Reference
+    /// identity is the only observable proof, so it is what this asserts.
+    /// </summary>
+    [Fact]
+    public async Task CategoriesAreServedWithoutDeserializingOnEveryHit()
+    {
+        _source.CategoriesAsync(Arg.Any<CancellationToken>())
+            .Returns((IReadOnlyList<string>)new[] { "beauty", "laptops" });
+        var cache = Cache();
+
+        var first = await cache.CategoriesAsync();
+        var second = await cache.CategoriesAsync();
+
+        Assert.Same(first, second);
     }
 
     [Fact]

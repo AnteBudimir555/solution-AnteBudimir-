@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -90,6 +91,19 @@ public sealed class MiddlewareApiFactory : WebApplicationFactory<Program>
             services.AddSingleton<ILoggerSettings>(Logs);
         });
     }
+
+    /// <summary>
+    /// Empties every cache entry in the running host — the analog of the Java suite's
+    /// <c>clearCaches</c>, and a prerequisite for any test that stubs a failure on an endpoint whose
+    /// results are cached: a warm entry from an earlier test is served without the substitute ever
+    /// being consulted, so the test passes or fails on execution order.
+    ///
+    /// <para><c>"*"</c> is HybridCache's wildcard tag. Measured on 10.8.0: it evicts entries written
+    /// with no tags at all, which is what makes this a true clear-all and lets these suites drop the
+    /// hand-maintained key lists they used to carry.</para>
+    /// </summary>
+    public async Task ClearCachesAsync() =>
+        await Services.GetRequiredService<HybridCache>().RemoveByTagAsync("*");
 
     /// <summary>Clears the user store and inserts a single account with the given credentials.</summary>
     public async Task ResetUsersAsync(string username, string password)
