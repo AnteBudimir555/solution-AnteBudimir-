@@ -23,6 +23,15 @@ internal static class Program
     private static async Task<int> Main(string[] args)
     {
         var options = HarnessOptions.Parse(args);
+
+        var shadow = options.Mode is "shadow" or "both" ? await ShadowAsync(options) : 0;
+        var contract = options.Mode is "openapi" or "both" ? await OpenApiDiff.RunAsync(options) : 0;
+
+        return shadow != 0 ? shadow : contract;
+    }
+
+    private static async Task<int> ShadowAsync(HarnessOptions options)
+    {
         Console.WriteLine($"Shadowing {options.JavaBaseUrl} (java) against {options.DotnetBaseUrl} (dotnet)");
 
         using var java = CreateClient(options.JavaBaseUrl);
@@ -208,7 +217,11 @@ internal sealed record HarnessOptions(
     string Password,
     string JwtSecret,
     string JwtIssuer,
-    string OutputPath)
+    string OutputPath,
+    string Mode,
+    string JavaOpenApiPath,
+    string DotnetOpenApiPath,
+    string OpenApiOutputPath)
 {
     public static HarnessOptions Parse(string[] args)
     {
@@ -229,7 +242,12 @@ internal sealed record HarnessOptions(
             // against both services.
             Value("secret", "dev-only-insecure-jwt-secret-please-override-in-real-environments-0123456789"),
             Value("issuer", "abysalto-middleware"),
-            Value("out", "shadow-report.md"));
+            Value("out", "shadow-report.md"),
+            // shadow | openapi | both
+            Value("mode", "both"),
+            Value("java-openapi", "/v3/api-docs"),
+            Value("dotnet-openapi", "/swagger/v1/swagger.json"),
+            Value("openapi-out", "openapi-diff.md"));
     }
 }
 
