@@ -482,3 +482,8 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Local development SQLite database (the H2 dev-profile analog) and its WAL sidecars.
+middleware-dev.db
+middleware-dev.db-shm
+middleware-dev.db-wal
