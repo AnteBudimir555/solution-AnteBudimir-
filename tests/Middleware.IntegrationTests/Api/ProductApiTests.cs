@@ -59,7 +59,9 @@ public sealed class ProductApiTests(MiddlewareApiFactory factory)
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Equal(ProblemJson, response.Content.Headers.ContentType?.MediaType);
-        // Generic detail: the specific cause must not leak (no account enumeration).
+        // Generic detail: the specific cause must not leak (no account enumeration). This is the only
+        // 401 that carries this wording — the token challenge says "Missing or invalid bearer token."
+        // (S6), and the pair must not be collapsed back into one message in either direction.
         var body = await ReadJsonAsync(response);
         Assert.Equal("Invalid username or password.", body.GetProperty("detail").GetString());
     }

@@ -366,14 +366,21 @@ failures happen inside the middleware pipeline, before any endpoint runs, but ar
 the same writer — so every error shares one consistent shape, including framework-generated
 responses such as an unknown route or an unsupported method.
 
-| Situation                                  | Status |
-|--------------------------------------------|:------:|
-| Validation / malformed params              | `400`  |
-| Missing/invalid/expired token, bad login   | `401`  |
-| Authenticated but not permitted            | `403`  |
-| Unknown product / route                    | `404`  |
-| Upstream source failure or timeout         | `502`  |
-| Unexpected server error                    | `500`  |
+| Situation                                  | Status | `detail`                            |
+|--------------------------------------------|:------:|-------------------------------------|
+| Validation / malformed params              | `400`  | the constraint messages             |
+| Bad login                                  | `401`  | `Invalid username or password.`     |
+| Missing/invalid/expired token              | `401`  | `Missing or invalid bearer token.`  |
+| Authenticated but not permitted            | `403`  | `Access Denied`                     |
+| Unknown product / route                    | `404`  | what was not found                  |
+| Upstream source failure or timeout         | `502`  | `The product source is currently unavailable.` |
+| Unexpected server error                    | `500`  | `An unexpected error occurred.`     |
+
+The two `401`s are worded differently on purpose. Login stays generic because distinguishing "no such
+user" from "wrong password" enables account enumeration; the token challenge has no username to
+enumerate, so it names the mechanism that rejected you — the difference between "re-authenticate" and
+"my password is wrong". It stays uniform across *why* the token failed (absent, malformed, expired,
+forged, or issued for a since-deleted user), which is what keeps it from leaking anything.
 
 Raw exception messages are never returned; upstream failures and unexpected errors render fixed,
 client-safe text and log the detail server-side.

@@ -3,6 +3,8 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Middleware.Core.Exceptions;
+using Middleware.Core.Options;
+using Middleware.Infrastructure.Security;
 using NSubstitute;
 using NSubstitute.ClearExtensions;
 using NSubstitute.ExceptionExtensions;
@@ -20,6 +22,13 @@ public sealed class ProblemContractTests(MiddlewareApiFactory factory)
     private const string Username = "tester";
     private const string Password = "pass1234";
     private const string TypePrefix = "https://abysalto.middleware/errors/";
+
+    /// <summary>
+    /// The detail every failed *token* check renders (S6). Distinct from the login endpoint's
+    /// "Invalid username or password.", which stays generic to prevent account enumeration —
+    /// see <c>ProductApiTests.LoginWithBadPasswordReturns401ProblemDetail</c>.
+    /// </summary>
+    private const string ChallengeDetail = "Missing or invalid bearer token.";
 
     private readonly HttpClient _client = factory.CreateClient();
 
@@ -87,7 +96,54 @@ public sealed class ProblemContractTests(MiddlewareApiFactory factory)
         var body = await ReadJsonAsync(response);
         AssertProblemShape(body, 401, "unauthorized");
         Assert.Equal("Authentication failed", body.GetProperty("title").GetString());
-        Assert.Equal("Invalid username or password.", body.GetProperty("detail").GetString());
+        // Not the login endpoint's "Invalid username or password." — see ChallengeDetail.
+        Assert.Equal(ChallengeDetail, body.GetProperty("detail").GetString());
+    }
+
+    /// <summary>
+    /// MIGRATION_PLAN S6. Every way a bearer token can be refused renders one body: the challenge
+    /// handler must not become a place where the failure reason leaks out through the wording. The
+    /// cases are the ones the handler's own comment claims to cover, asserted rather than assumed —
+    /// a malformed token and a well-formed one signed by a stranger take different paths through the
+    /// JWT middleware, and expiry is a validation failure rather than a parse failure.
+    /// </summary>
+    [Theory]
+    [InlineData("not-a-real-token")]        // unparseable
+    [InlineData("")]                        // the header is present but carries nothing
+    public async Task AnUnusableBearerHeaderProducesTheSameUnauthorizedProblem(string token)
+    {
+        AssertChallengeProblem(await SendWithTokenAsync(token));
+    }
+
+    [Fact]
+    public async Task ATokenSignedByAStrangerProducesTheSameUnauthorizedProblem()
+    {
+        var forged = TokenIssuer("a-different-secret-of-at-least-thirty-two-characters", 60).IssueToken(Username);
+
+        AssertChallengeProblem(await SendWithTokenAsync(forged));
+    }
+
+    [Fact]
+    public async Task AnExpiredTokenProducesTheSameUnauthorizedProblem()
+    {
+        // Validation runs with zero clock skew, so a token that expired a minute ago is already dead.
+        var expired = TokenIssuer(MiddlewareApiFactory.JwtSecret, -1).IssueToken(Username);
+
+        AssertChallengeProblem(await SendWithTokenAsync(expired));
+    }
+
+    /// <summary>
+    /// The one cause that is neither missing nor invalid as a token: the signature, issuer and lifetime
+    /// all check out, and <c>OnTokenValidated</c> rejects it because the subject no longer exists. It
+    /// reaches the same challenge handler, which is what lets a single wording cover the path.
+    /// </summary>
+    [Fact]
+    public async Task ATokenForADeletedUserProducesTheSameUnauthorizedProblem()
+    {
+        var token = await LoginAsync();
+        await factory.ResetUsersAsync("someone-else", Password);
+
+        AssertChallengeProblem(await SendWithTokenAsync(token));
     }
 
     [Fact]
@@ -150,6 +206,44 @@ public sealed class ProblemContractTests(MiddlewareApiFactory factory)
     }
 
     // --- helpers -----------------------------------------------------------
+
+    /// <summary>Asserts the single body every rejected-token path must produce.</summary>
+    private static void AssertChallengeProblem(JsonElement body)
+    {
+        AssertProblemShape(body, 401, "unauthorized");
+        Assert.Equal("Authentication failed", body.GetProperty("title").GetString());
+        Assert.Equal(ChallengeDetail, body.GetProperty("detail").GetString());
+    }
+
+    /// <summary>
+    /// Sends the header verbatim rather than through <see cref="AuthenticationHeaderValue"/>, which
+    /// rejects an empty parameter client-side — the point of these cases is what the *server* does
+    /// with a header a real client can send.
+    /// </summary>
+    private async Task<JsonElement> SendWithTokenAsync(string token)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/products");
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {token}");
+
+        var response = await _client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+        return await ReadJsonAsync(response);
+    }
+
+    /// <summary>
+    /// Mints tokens the host will refuse. A negative lifetime is what makes the expired case
+    /// constructible without waiting — <see cref="JwtService"/> writes <c>exp</c> explicitly rather
+    /// than letting the handler default it.
+    /// </summary>
+    private static JwtService TokenIssuer(string secret, long expirationMinutes) =>
+        new(new JwtOptions
+        {
+            Secret = secret,
+            Issuer = MiddlewareApiFactory.JwtIssuer,
+            ExpirationMinutes = expirationMinutes
+        });
 
     private static void AssertProblemShape(JsonElement body, int status, string typeSlug)
     {

@@ -428,15 +428,22 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 
 ### Phase 6: Pre-Release Hardening — **OPEN**
 
-> **Status: in progress — all four release blockers are closed, and S1 and S3 with them.** The cache
-> cluster (B2, B3, S2, S5), the SDK pin (S4), the .NET-only restructure that carried B4 with it, the
-> seed-credential fix (B1), the upstream resilience pipeline (S1) and the caching coverage gap (S3)
-> have landed. Remaining: S6, S7 and §6.3 (L3 half-done) — all severity High and below.
+> **Status: in progress — all four release blockers are closed, and S1, S3 and S6 with them.** The
+> cache cluster (B2, B3, S2, S5), the SDK pin (S4), the .NET-only restructure that carried B4 with it,
+> the seed-credential fix (B1), the upstream resilience pipeline (S1), the caching coverage gap (S3)
+> and the 401 challenge detail (S6) have landed. Remaining: S7 and §6.3 (L3 half-done) — all severity
+> High and below.
 >
 > **Verified on SDK 10.0.302** — the version the pin records and the Phase 5 parity run used,
 > installed user-local to `~/.dotnet` after S4 landed. `dotnet build -c Release` is warning-free under
-> `TreatWarningsAsErrors`, and the suite is **152 passed, 0 failed, 0 skipped** (72 unit + 80
-> integration), up from the 139 baseline by the seven tests S1 adds and the six S3 adds.
+> `TreatWarningsAsErrors`, and the suite is **157 passed, 0 failed, 0 skipped** (72 unit + 85
+> integration), up from the 139 baseline by the seven tests S1 adds, the six S3 adds and the five S6
+> adds.
+>
+> **The Phase 6 acceptance criteria below are stale for the cache cluster.** Three of them (bounded
+> cache memory, bounded distinct fetches, the T1 invariant) are still `[ ]` although B2/B3/S2/S5 closed
+> them with tests. Left as-is here rather than folded into an unrelated commit; it wants its own pass
+> over §6 that reconciles the criteria against what actually landed.
 >
 > `AFullSizedPageIsRetainedUnderTheConfiguredSizeBound` passes against the real host, which is the
 > point that matters for B3: the byte budget does retain a realistic 100-product page, so the unit
@@ -674,12 +681,27 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
   `Error` and throws `UpstreamException`, surfacing as a 502 rather than an unbounded allocation
   driven by upstream catalog size on a request a client can repeat. Covered by
   `PriceFilteredCandidatesRefusesToLoadMoreThanTheInMemoryThreshold`.
-- [ ] **S6 — Correct the 401 detail on the challenge path.** `ApiSecurityExtensions.cs:91` renders
-  `"Invalid username or password."` for *every* challenge — missing header, expired token, bad
-  signature, deleted user. That wording is correct only for `POST /api/auth/login`. The enumeration
-  concern that justifies a generic message applies to the login path; the challenge path leaks nothing
-  by being accurate (`"Missing or invalid bearer token."`). **[inherited]** — the Java filter chain has
-  the same wording, so this moves shadow cases.
+- [x] **S6 — Correct the 401 detail on the challenge path.** *(Done, as proposed.)*
+  `ApiSecurityExtensions.cs:91` rendered `"Invalid username or password."` for *every* challenge —
+  missing header, expired token, bad signature, deleted user. That wording is correct only for
+  `POST /api/auth/login`. The enumeration concern that justifies a generic message applies to the login
+  path; the challenge path leaks nothing by being accurate. It now renders
+  `"Missing or invalid bearer token."`, and the login path is untouched — the two 401 details are now a
+  deliberate pair, so the change is only safe as long as they stay distinct. Both sides carry a comment
+  saying so, and a test pins each.
+
+  > **The handler's claim to cover four causes was asserted, not assumed.** All four are now driven
+  > end-to-end through the running host and must render one identical body: an unparseable token, a
+  > `Bearer` header carrying nothing, a well-formed token signed with a different secret, an expired
+  > token (mintable because `JwtService` writes `exp` explicitly and validates at zero clock skew), and
+  > a valid token whose subject has since been deleted. The last is the one worth having: it fails in
+  > `OnTokenValidated` via `context.Fail(...)`, not in token parsing, and reaching `OnChallenge` from
+  > there is what lets a single wording cover the path at all. Measured: it does. Had it not, the
+  > deleted-user case would have fallen through to the framework's empty-bodied 401 and broken the
+  > RFC-7807 contract (R2) rather than merely being worded wrongly.
+
+  **[inherited]** — the Java filter chain has the same wording, so this would have moved shadow cases.
+  Moot: the harness is gone (T5), so nothing gates on the old string.
 - [ ] **S7 — Restrict CORS.** `Program.cs:65-66` allows any origin, header and method. Safe *because*
   no cookies are involved, and the reasoning is written down — but any origin can drive the API with a
   stolen token. Move to an allowlist. **T7: do not reflexively add `AllowCredentials` when you switch

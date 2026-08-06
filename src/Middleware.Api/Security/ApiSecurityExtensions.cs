@@ -81,6 +81,18 @@ internal static class ApiSecurityExtensions
         ]));
     }
 
+    /// <summary>
+    /// Renders the 401 for a failed *token* check: no header, malformed or unsigned token, expired
+    /// token, or a subject <see cref="EnsureUserStillExistsAsync"/> rejected.
+    ///
+    /// <para>The detail deliberately differs from the one the login endpoint returns. A generic
+    /// <c>"Invalid username or password."</c> is required there — distinguishing "no such user" from
+    /// "wrong password" enables account enumeration — but on this path there are no credentials to
+    /// enumerate, and the client never submitted a username. Naming the bearer token tells the caller
+    /// which of the two authentication mechanisms rejected them, which is the difference between
+    /// "re-authenticate" and "my password is wrong", and leaks nothing: it stays uniform across all
+    /// four causes above, so it still says nothing about *why* the token was refused.</para>
+    /// </summary>
     private static Task WriteUnauthorizedProblemAsync(JwtBearerChallengeContext context)
     {
         // Suppress the framework's empty-bodied 401 (and its WWW-Authenticate header) in favour of the
@@ -88,7 +100,7 @@ internal static class ApiSecurityExtensions
         context.HandleResponse();
         return ApiProblem.WriteAsync(context.HttpContext, ApiProblem.Create(
             context.HttpContext, StatusCodes.Status401Unauthorized,
-            "Authentication failed", "Invalid username or password.", "unauthorized"));
+            "Authentication failed", "Missing or invalid bearer token.", "unauthorized"));
     }
 
     private static Task WriteForbiddenProblemAsync(ForbiddenContext context) =>
