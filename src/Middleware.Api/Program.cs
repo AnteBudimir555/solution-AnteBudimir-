@@ -3,7 +3,10 @@ using Middleware.Api.Errors;
 using Middleware.Api.Middleware;
 using Middleware.Api.OpenApi;
 using Middleware.Api.Security;
+using Microsoft.AspNetCore.Cors.Infrastructure;
+using Microsoft.Extensions.Options;
 using Middleware.Api.Serialization;
+using Middleware.Core.Options;
 using Middleware.Core.Services;
 using Middleware.Infrastructure.Persistence;
 using Middleware.Infrastructure.Security;
@@ -60,10 +63,34 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 // HttpMessageNotReadableException always reaches its handler.
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
 
-// Explicit policy rather than an implicit default: the API is a stateless, token-authenticated
-// middleware, so browsers from any origin may call it — no cookies or credentials are involved.
-builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
-    policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+// --- CORS ---------------------------------------------------------------------
+// An allowlist, defaulting to empty: no browser origin may read a response unless it is named in
+// configuration. Every entry is validated at start-up (see CorsPolicyOptions) because each way of
+// misspelling an origin — trailing slash, a path, a non-http scheme — fails silently at runtime.
+builder.Services.AddOptions<CorsPolicyOptions>()
+    .Bind(builder.Configuration.GetSection(CorsPolicyOptions.SectionName))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+builder.Services.AddCors();
+
+// The policy is built from the bound options rather than from a `builder.Configuration.Get<>()` read
+// here, and that is load-bearing: top-level statements run before the host is built, so an eager read
+// sees only the sources registered by this point and silently ignores any added later — which is how
+// the integration suite supplies its origins, and how an operator's extra provider would too. The
+// symptom is not an error but an empty allowlist. Same `.Configure<TDep>` shape AddApiSecurity uses to
+// feed JwtBearerOptions from JwtService.
+builder.Services.AddOptions<CorsOptions>().Configure<IOptions<CorsPolicyOptions>>((cors, allowed) =>
+    cors.AddDefaultPolicy(policy => policy
+        .WithOrigins(allowed.Value.AllowedOrigins)
+        .AllowAnyHeader()
+        .AllowAnyMethod()));
+// No AllowCredentials above, deliberately and permanently. AllowAnyOrigin could not express it — the
+// framework throws on that combination — so switching to WithOrigins is precisely the moment it
+// becomes expressible, and it is the reflexive addition when a browser client misbehaves. This API
+// authenticates by bearer token and needs no credentialed request; enabling it would newly expose
+// endpoints that have never had to consider cookie-driven CSRF. CorsTests.CredentialsAreNeverAllowed
+// is the guardrail that AllowAnyOrigin used to provide for free.
 
 var app = builder.Build();
 
@@ -85,11 +112,19 @@ app.UseTrailingSlashRejection();
 // Documentation is public: served before authentication so no token is required to read it.
 app.UseApiDocumentation();
 
-// Explicit, so the method-mismatch step below can sit between route resolution and authentication.
+// Explicit, so the CORS and method-mismatch steps below can sit between route resolution and
+// authentication.
 app.UseRouting();
+
+// Ahead of UsePublicPathMethodMismatch, and that ordering is the whole reason a browser can reach the
+// login endpoint at all. A cross-origin POST of JSON is preflighted, and OPTIONS matches no route on
+// /api/auth/login, so routing selects the framework's 405 short-circuit — which the method-mismatch
+// step then *runs*, answering 405 before CORS is consulted. The preflight fails, so the browser never
+// sends the real POST. CORS must get first refusal: it recognizes the preflight and answers it. It
+// still sits after UseRouting so endpoint metadata is available, and before UseAuthorization.
+app.UseCors();
 app.UsePublicPathMethodMismatch();
 
-app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 

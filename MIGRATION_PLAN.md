@@ -428,17 +428,16 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 
 ### Phase 6: Pre-Release Hardening — **OPEN**
 
-> **Status: in progress — all four release blockers are closed, and S1, S3 and S6 with them.** The
-> cache cluster (B2, B3, S2, S5), the SDK pin (S4), the .NET-only restructure that carried B4 with it,
-> the seed-credential fix (B1), the upstream resilience pipeline (S1), the caching coverage gap (S3)
-> and the 401 challenge detail (S6) have landed. Remaining: S7 and §6.3 (L3 half-done) — all severity
-> High and below.
+> **Status: §6.1 and §6.2 are closed.** The cache cluster (B2, B3, S2, S5), the SDK pin (S4), the
+> .NET-only restructure that carried B4 with it, the seed-credential fix (B1), the upstream resilience
+> pipeline (S1), the caching coverage gap (S3), the 401 challenge detail (S6) and the CORS allowlist
+> (S7) have landed. Remaining: §6.3 only — L1, L2, the open half of L3, and L4.
 >
 > **Verified on SDK 10.0.302** — the version the pin records and the Phase 5 parity run used,
 > installed user-local to `~/.dotnet` after S4 landed. `dotnet build -c Release` is warning-free under
-> `TreatWarningsAsErrors`, and the suite is **157 passed, 0 failed, 0 skipped** (72 unit + 85
-> integration), up from the 139 baseline by the seven tests S1 adds, the six S3 adds and the five S6
-> adds.
+> `TreatWarningsAsErrors`, and the suite is **173 passed, 0 failed, 0 skipped** (72 unit + 101
+> integration), up from the 139 baseline by the seven tests S1 adds, the six S3 adds, the five S6 adds
+> and the sixteen S7 adds.
 >
 > **The Phase 6 acceptance criteria below are stale for the cache cluster.** Three of them (bounded
 > cache memory, bounded distinct fetches, the T1 invariant) are still `[ ]` although B2/B3/S2/S5 closed
@@ -702,10 +701,51 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 
   **[inherited]** — the Java filter chain has the same wording, so this would have moved shadow cases.
   Moot: the harness is gone (T5), so nothing gates on the old string.
-- [ ] **S7 — Restrict CORS.** `Program.cs:65-66` allows any origin, header and method. Safe *because*
-  no cookies are involved, and the reasoning is written down — but any origin can drive the API with a
-  stolen token. Move to an allowlist. **T7: do not reflexively add `AllowCredentials` when you switch
-  to `WithOrigins`.**
+- [x] **S7 — Restrict CORS.** *(Done — and it uncovered two live bugs, neither of which this item
+  predicted.)* `Program.cs:65-66` allowed any origin, header and method. It is now an allowlist bound
+  from `Cors:AllowedOrigins`, **defaulting to empty** — no browser origin at all, which is the right
+  default for an API whose callers are server-side. `CorsPolicyOptions` validates each entry on
+  start-up, because every way of misspelling an origin is accepted by `WithOrigins` and then matches
+  nothing, with no error and no log line. `AllowCredentials` is not set (T7), and
+  `CorsTests.CredentialsAreNeverAllowed` is the replacement guardrail.
+
+  > **The stated justification was wrong, and the tests say so.** This item claimed *"any origin can
+  > drive the API with a stolen token"*. Restricting CORS does not address that. Measured against the
+  > running host: a request from a disallowed origin still reaches the endpoint, still executes it,
+  > and still returns 200 with the complete body — only the absent allow-header stops the calling
+  > script from reading it, and a non-browser client ignores the mechanism entirely. A stolen token
+  > still works from anywhere. What the change actually delivers is a bound on which *web pages* can
+  > use the API from a visitor's browser. That is worth having, but it is not an access control, and
+  > `ADisallowedOriginIsStillServedByTheEndpoint` asserts the limitation rather than leaving it to a
+  > comment nobody re-reads.
+
+  > **Two bugs found by writing the tests first, both invisible without them.**
+  >
+  > 1. **Preflight to `/api/auth/login` answered 405, so no browser could ever log in
+  >    cross-origin.** `OPTIONS` matches no route there, so routing selects the framework's 405
+  >    short-circuit — and `UsePublicPathMethodMismatch` exists precisely to *run* that short-circuit
+  >    on public paths. It sat ahead of `UseCors`, so the preflight was refused before CORS saw it and
+  >    the real `POST` was never sent. Fixed by moving `app.UseCors()` between `UseRouting()` and
+  >    `UsePublicPathMethodMismatch()`. This was **already latent under `AllowAnyOrigin`** — the
+  >    permissive policy did not save it — so it predates this item and would have shipped.
+  > 2. **An eager `builder.Configuration.GetSection(...).Get<CorsPolicyOptions>()` silently read an
+  >    empty allowlist.** Top-level statements run before the host is built, so that read sees only
+  >    the sources registered by that point and ignores any added later. The policy is now built from
+  >    `IOptions<CorsPolicyOptions>` via `AddOptions<CorsOptions>().Configure<TDep>(...)`, the same
+  >    shape `AddApiSecurity` already uses for `JwtBearerOptions`. **Worth noting: `AddUpstreamSource`
+  >    (S1) reads its options the same eager way.** It is not wrong there today — nothing overrides
+  >    `Upstream:*` after builder construction, and the integration suite substitutes `IProductSource`
+  >    outright so it never notices — but it is the same latent trap and is now recorded as such.
+  >
+  > A third measured behaviour needed no fix: `Vary: Origin` is emitted only when two or more origins
+  > are configured. That is safe (with one origin the header is constant for every request that gets
+  > one), but `ResponsesVaryByOriginWhenMoreThanOneIsAllowed` uses a two-origin fixture deliberately,
+  > since reducing it to one would make the assertion silently vacuous.
+
+  Cost paid knowingly: **this is a breaking change for any existing browser client.** The previous
+  policy answered `*`; the new default answers nothing. A deployment that needs browser access must
+  now name its origins or its client breaks with an opaque CORS error. That is the intent of the
+  item, but it is a real migration step for an operator, and it fails closed rather than loudly.
 
 #### 6.3 Lower priority
 
@@ -877,13 +917,20 @@ Ordered by how quietly each one fails. **T1 is the only item here that can corru
   *version is a floor* — a machine with only 10.0.100 is rejected too. That is deliberate (it records
   the SDK the parity run used) but it is the one way this pin can still block someone, so lower the
   floor rather than loosen `rollForward` if that ever comes up.
-- **T7 — Restricting CORS is the moment someone adds `AllowCredentials`.** `AllowAnyOrigin` and
-  `AllowCredentials` are mutually exclusive, so the current config *cannot* express the dangerous
-  combination. Switching to `WithOrigins` removes that guardrail, and `AllowCredentials` is the
-  reflexive next addition when a browser client misbehaves. This API authenticates by bearer token and
-  needs no credentialed requests; adding it would newly enable cookie-driven CSRF against endpoints
-  that have never had to consider it. Restrict origins, leave credentials off, and say why in a
-  comment beside it.
+- **T7 — Restricting CORS is the moment someone adds `AllowCredentials`.** *(Confirmed and avoided in
+  S7.)* `AllowAnyOrigin` and `AllowCredentials` are mutually exclusive, so the old config *could not*
+  express the dangerous combination. Switching to `WithOrigins` removes that guardrail, and
+  `AllowCredentials` is the reflexive next addition when a browser client misbehaves. This API
+  authenticates by bearer token and needs no credentialed requests; adding it would newly enable
+  cookie-driven CSRF against endpoints that have never had to consider it. Restrict origins, leave
+  credentials off, and say why in a comment beside it.
+
+  > **Measured, both halves.** `new CorsPolicyBuilder().AllowAnyOrigin().AllowCredentials().Build()`
+  > throws `InvalidOperationException` — the guardrail is real. `WithOrigins(...).AllowCredentials()`
+  > builds with no complaint — so it is genuinely gone the moment the allowlist lands. A comment was
+  > therefore not enough: `CorsTests.CredentialsAreNeverAllowed` asserts the absence of
+  > `Access-Control-Allow-Credentials` on both a simple response and a preflight, because nothing else
+  > in the suite would notice it appearing.
 - **T8 — Fixing the surrogate split (L1) breaks parity by design.** Java's `substring` split surrogate
   pairs exactly as C#'s does, so the two services agreed — including on the mangled output. Correcting
   .NET would have created a shadow-corpus divergence that is *correct*, and the trap was that the

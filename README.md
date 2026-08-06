@@ -261,12 +261,41 @@ Configuration binds to typed options classes. Any key can be supplied by environ
 | `Security:SeedUser:Enabled`      | `false`                     | Create the seed user on startup               |
 | `Security:SeedUser:Username`     | —                           | Seed user name (required when enabled)        |
 | `Security:SeedUser:Password`     | —                           | Seed user password (required when enabled)    |
+| `Cors:AllowedOrigins`            | *(empty — no browser origin)* | Exact origins allowed to read responses; see below |
 
 Environments:
 - **`Development`** — SQLite, seed user on (`demo`/`demo1234`), a throwaway JWT secret, readable
   console logs. See `appsettings.Development.json`.
 - **Anything else** — compact JSON logs, no default secret, seeding off unless explicitly enabled,
   and no way to enable it without supplying credentials.
+
+### CORS
+
+`Cors:AllowedOrigins` is an allowlist and **defaults to empty**, which allows no browser origin at
+all — the right default for an API whose callers are server-side. A deployment that serves a browser
+client names its origins:
+
+```jsonc
+"Cors": { "AllowedOrigins": [ "https://app.example.com", "http://localhost:5173" ] }
+```
+
+or, by environment variable, `Cors__AllowedOrigins__0=https://app.example.com`.
+
+Entries are **exact origins**: scheme, host, and port if non-default — no trailing slash and no path.
+Every other spelling is accepted by the framework and then matches nothing, with no error and no log
+line, so the app validates them at startup and refuses to start on a bad one. Host casing is
+normalized and matches either way.
+
+**Credentials are never allowed**, and that is a fixed decision rather than a default. This API
+authenticates by bearer token; enabling `AllowCredentials` would expose endpoints to cookie-driven
+CSRF that have never had to consider it.
+
+> **What this does not do.** CORS is enforced by the browser. A request from a disallowed origin
+> still reaches the endpoint, runs it, and returns the full body — the absent
+> `Access-Control-Allow-Origin` header only stops the calling *script* from reading it, and a
+> non-browser client ignores the mechanism entirely. This bounds which web pages can use the API from
+> a visitor's browser. It is not an access control, and a stolen token still works from anywhere:
+> authentication remains the only thing guarding the data.
 
 ---
 

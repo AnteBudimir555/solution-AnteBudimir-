@@ -36,6 +36,7 @@ public sealed class MiddlewareApiFactory : WebApplicationFactory<Program>
     private readonly SqliteConnection _connection = new("DataSource=:memory:");
     private string _jwtSecret = JwtSecret;
     private (string Username, string Password)? _seedUser;
+    private string[] _allowedOrigins = [];
 
     public MiddlewareApiFactory() => _connection.Open();
 
@@ -59,12 +60,23 @@ public sealed class MiddlewareApiFactory : WebApplicationFactory<Program>
         return this;
     }
 
+    /// <summary>
+    /// Populates the CORS allowlist before the host is built. The default is empty — the same
+    /// production default — so every other suite runs with no browser origin allowed.
+    /// </summary>
+    public MiddlewareApiFactory WithAllowedOrigins(params string[] origins)
+    {
+        _allowedOrigins = origins;
+        return this;
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment(Environments.Staging);
 
-        builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
-            new Dictionary<string, string?>
+        builder.ConfigureAppConfiguration((_, configuration) =>
+        {
+            var settings = new Dictionary<string, string?>
             {
                 ["Jwt:Secret"] = _jwtSecret,
                 ["Jwt:Issuer"] = JwtIssuer,
@@ -73,7 +85,17 @@ public sealed class MiddlewareApiFactory : WebApplicationFactory<Program>
                 ["Security:SeedUser:Enabled"] = _seedUser is null ? "false" : "true",
                 ["Security:SeedUser:Username"] = _seedUser?.Username,
                 ["Security:SeedUser:Password"] = _seedUser?.Password
-            }));
+            };
+
+            // Array binding is by index, which is also how an operator would supply these through
+            // environment variables (Cors__AllowedOrigins__0).
+            for (var i = 0; i < _allowedOrigins.Length; i++)
+            {
+                settings[$"Cors:AllowedOrigins:{i}"] = _allowedOrigins[i];
+            }
+
+            configuration.AddInMemoryCollection(settings);
+        });
 
         builder.ConfigureServices(services =>
         {

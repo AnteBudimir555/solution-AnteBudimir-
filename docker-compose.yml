@@ -69,6 +69,11 @@ services:
       Security__SeedUser__Enabled: "true"
       Security__SeedUser__Username: ${SEED_USER_USERNAME:-demo}
       Security__SeedUser__Password: ${SEED_USER_PASSWORD:?set SEED_USER_PASSWORD in .env (copy .env.example) — no default, so the demo stack never ships a known password}
+      # CORS is an allowlist and ships empty, so no browser origin may read a response — correct for
+      # this stack, which is driven by curl and the Swagger UI (same-origin, unaffected). A browser
+      # client needs its exact origin here, indexed, with no trailing slash; a malformed one fails
+      # start-up rather than silently matching nothing:
+      #   Cors__AllowedOrigins__0: https://app.example.com
     ports:
       - "8080:8080"
 

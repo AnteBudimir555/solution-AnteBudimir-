@@ -68,4 +68,40 @@ public sealed class ApplicationStartupTests
         var failure = Assert.Throws<OptionsValidationException>(() => factory.CreateClient());
         Assert.Contains(nameof(JwtOptions.Secret), string.Join(" ", failure.Failures), StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// S7. Every one of these spellings is accepted by <c>WithOrigins</c> without complaint and then
+    /// matches nothing — measured against a running host, a configured
+    /// <c>"https://app.example.com/"</c> does not match an <c>Origin: https://app.example.com</c>
+    /// request. No header is emitted and nothing is logged, so the only symptom is a browser client
+    /// that is blocked for no visible reason. Start-up validation converts that into a message.
+    /// </summary>
+    [Theory]
+    [InlineData("https://app.example.com/")]        // trailing slash: an Origin header never has one
+    [InlineData("https://app.example.com/app")]     // a path is not part of an origin
+    [InlineData("app.example.com")]                 // no scheme
+    [InlineData("ftp://app.example.com")]           // not a browser origin
+    [InlineData("*")]                               // AllowAnyOrigin by the back door
+    [InlineData("  ")]
+    public void StartupFailsFastOnAnOriginThatWouldSilentlyMatchNothing(string origin)
+    {
+        using var factory = new MiddlewareApiFactory().WithAllowedOrigins(origin);
+
+        var failure = Assert.Throws<OptionsValidationException>(() => factory.CreateClient());
+        Assert.Contains(nameof(CorsPolicyOptions.AllowedOrigins), string.Join(" ", failure.Failures),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void StartupAcceptsOriginsWithAPortAndMixedCase()
+    {
+        // Host casing *is* normalized by the framework and matches either way, so it must not be
+        // rejected; a non-default port is part of the origin and must be allowed through.
+        using var factory = new MiddlewareApiFactory()
+            .WithAllowedOrigins("http://localhost:5173", "https://APP.example.com");
+
+        using var client = factory.CreateClient();
+
+        Assert.NotNull(client);
+    }
 }
