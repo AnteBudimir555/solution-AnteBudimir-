@@ -136,10 +136,10 @@ Dependency direction: `Api → Infrastructure → Core`; `Core` depends on nothi
 
 > **Status (Phase 1): code-complete.** Solution builds warning-free; 32 ported unit
 > tests pass. The .NET solution lives in the top-level `dotnet/` folder (kept separate
-> from the Java `src/` tree during migration). **Target is `net8.0`**, not `net10.0`:
-> the available SDK is 8.0.x and the plan flags .NET 8 as the supported fallback —
-> bumping `TargetFramework` in `dotnet/Directory.Build.props` is the only change to
-> move to a newer runtime later. The JWT fail-fast (`ValidateOnStart`) is deferred to
+> from the Java `src/` tree during migration). Phases 1-5 were built against `net8.0`,
+> the plan's sanctioned fallback, because that was the only SDK installed at the time;
+> the solution now targets **`net10.0`** as §2.1 specifies — see the runtime-bump note
+> after Phase 5. The JWT fail-fast (`ValidateOnStart`) is deferred to
 > Phase 4, where the Api DI container is wired; the `JwtOptions` validation attributes
 > are already in place.
 
@@ -147,7 +147,7 @@ Dependency direction: `Api → Infrastructure → Core`; `Core` depends on nothi
 - [x] Create the .NET solution (`Abysalto.Middleware.sln`) and the project folders per §2.2 (under `dotnet/`).
 - [x] Scaffold projects: `Middleware.Api` (webapi/minimal), `Middleware.Core` (classlib), `Middleware.Infrastructure` (classlib), `Middleware.UnitTests` + `Middleware.IntegrationTests` (xunit).
 - [x] Wire project references: `Api → Infrastructure → Core`; test projects reference their targets.
-- [x] Add root `Directory.Build.props`: `TargetFramework=net8.0`, `Nullable=enable`, `ImplicitUsings=enable`, `TreatWarningsAsErrors=true`, `LangVersion=latest`.
+- [x] Add root `Directory.Build.props`: `TargetFramework` (net8.0 initially, now net10.0), `Nullable=enable`, `ImplicitUsings=enable`, `TreatWarningsAsErrors=true`, `LangVersion=latest`.
 - [x] Define the Clean Architecture core domain records: `Product`, `Dimensions`, `Meta`, `Review`, `ProductPage` (+ `Role`).
 - [x] Map shared DTOs: `ProductSummaryDto`, `ProductDetailDto`, `LoginRequest`, `LoginResponse` (with `Bearer(...)` factory).
 - [x] Port `PagedResponse<T>` including `Of(...)` — `totalPages = ceil(total/size)`, guarded for `size <= 0`.
@@ -236,11 +236,11 @@ Dependency direction: `Api → Infrastructure → Core`; `Core` depends on nothi
 > as skipped now runs for real — Docker is available on this machine.
 >
 > Notes on the three places the .NET stack forced a decision:
-> * **OpenAPI UI.** On the sanctioned `net8.0` fallback, `Microsoft.AspNetCore.OpenApi` only
->   contributes endpoint metadata; its document generator arrived in .NET 9. Swashbuckle therefore
->   generates both the document (`/swagger/v1/swagger.json`) and the UI (`/swagger`) in place of
->   Scalar. This is exactly the "OpenAPI notes" §2.1 flags for the .NET 8 target, and it is a
->   package swap, not a contract change: `OpenApiDocumentTests` pins the six paths, the single
+> * **OpenAPI UI.** Swashbuckle generates both the document (`/swagger/v1/swagger.json`) and the UI
+>   (`/swagger`) in place of Scalar. Originally forced: on the `net8.0` fallback
+>   `Microsoft.AspNetCore.OpenApi` only contributes endpoint metadata, its document generator having
+>   arrived in .NET 9. The net10 bump removes that constraint, but the swap was deliberately left out
+>   of it — see the runtime-bump note. Either way it is a package choice, not a contract change: `OpenApiDocumentTests` pins the six paths, the single
 >   `bearerAuth` scheme, per-operation security (login carries no lock), the shared 400/401/500 +
 >   502/404 ProblemDetail responses, and the real parameter types.
 > * **Parameter binding.** Endpoint parameters bind as `string?` and convert in `QueryParsing`.
@@ -271,7 +271,7 @@ Dependency direction: `Api → Infrastructure → Core`; `Core` depends on nothi
 - [x] Implement integration tests with `WebApplicationFactory<Program>` + WireMock.Net (upstream) + Testcontainers-Postgres (DB); port `ProductApiIT` and `CachingIT`.
 - [x] Execute endpoint comparison tests: API-shadowing harness replays a fixed corpus against both Java and .NET services (same DummyJSON) and diffs normalized responses.
 - [x] Snapshot both OpenAPI documents and diff paths/schemas to prove the contract is unchanged.
-- [x] Package: multi-stage `Dockerfile` (`dotnet publish` → `aspnet:8.0`, non-root user); add `docker-compose.dotnet.yml` (keep `postgres:17`, map env vars, preserve the missing-secret fail-fast).
+- [x] Package: multi-stage `Dockerfile` (`dotnet publish` → `aspnet:10.0`, non-root user); add `docker-compose.dotnet.yml` (keep `postgres:17`, map env vars, preserve the missing-secret fail-fast).
 - [x] Final performance/load test against the new stack; compare latency and upstream-call counts to the Java baseline.
 
 > **Status — Phase 5 complete (verification, packaging, parity).** Full suite: **133 passed, 0 skipped**
@@ -354,6 +354,43 @@ Dependency direction: `Api → Infrastructure → Core`; `Core` depends on nothi
 - [x] OpenAPI diff shows no path/schema changes. *(0 unexpected contract differences and 0 documentation differences; 2 accepted with reasons.)*
 - [x] `docker compose up --build` brings up DB + .NET app; smoke suite passes. *(Smoke is the full shadowing corpus replayed against the packaged image: parity-clean.)*
 - [x] Load test shows no material latency regression and cache single-flight holds under concurrency. *(Single-flight exact on both; identical upstream counts; .NET faster on the warm path.)*
+
+### Runtime bump: `net8.0` → `net10.0`
+
+Phases 1–5 were built against the plan's sanctioned .NET 8 fallback, that being the only SDK
+installed. The solution now targets **`net10.0`** (§2.1), on SDK 10.0.302 / runtime 10.0.10.
+
+- `TargetFramework` lives in `dotnet/Directory.Build.props` alone; the five per-project restatements
+  of it (and of `Nullable`/`ImplicitUsings`) were removed rather than edited, so there is one source
+  of truth to change next time.
+- Framework-versioned packages moved to 10.x (EF Core, Npgsql, JwtBearer, Mvc.Testing, the
+  `Extensions.*` family, Serilog.AspNetCore). Independently-versioned ones (xunit, FluentValidation,
+  BCrypt, WireMock, Testcontainers) were left alone.
+- **Two real vulnerabilities surfaced**, because the .NET 10 SDK audits transitive packages by
+  default and `TreatWarningsAsErrors` promotes NU1903 to an error: `Microsoft.OpenApi` 2.0.0
+  (GHSA-v5pm-xwqc-g5wc) and `SQLitePCLRaw.lib.e_sqlite3` 2.1.11 (GHSA-2m69-gcr7-jv3q). Both are now
+  pinned forward by direct references, each carrying a comment saying why a package the code never
+  calls is listed.
+- Swashbuckle moved 6.9.0 → 10.2.3: ASP.NET Core 10 resolves Microsoft.OpenApi **2.x**, which is
+  binary-incompatible with the 1.x that Swashbuckle 6 was built against. That forced a contained
+  migration of `ApiDocumentationExtensions` to the 2.x model — root namespace, `JsonSchemaType`
+  instead of type strings, `JsonNode` instead of `IOpenApiAny`, string-typed numeric bounds, and
+  schemas/parameters exposed as interfaces that only a concrete instance can mutate. One trap worth
+  naming: an `OpenApiSecuritySchemeReference` built without its host document resolves to no name and
+  serializes as an empty `{}` — which reads as *no authentication required*. `OpenApiDocumentTests`
+  caught it.
+- **The Scalar swap was deliberately not folded in.** .NET 10 does ship the in-box document
+  generator the plan sketches, so the Phase 4 deviation is now removable — but it would rewrite the
+  operation and schema filters that pin the document to the Java contract, which is a contract
+  change wearing a package change's clothes. It is worth doing on its own, against the OpenAPI diff.
+
+**Parity re-verified on net10, all against the packaged image:** 133 tests pass (66 unit + 67
+integration), the Release build is warning-free, the shadowing corpus is **79/80 identical** with the
+same single known divergence, and the OpenAPI diff reports **0 unexpected** contract differences and
+**0** documentation differences — the same numbers as on net8. Load behaviour is unchanged where it
+counts: single-flight 1/1 upstream calls, warm 0/0, mixed corpus 253/253, with .NET still roughly 4×
+faster than Java on the warm-path p50. (The absolute latencies are not comparable to the net8 run —
+that run had a quieter machine — and no controlled net8-vs-net10 benchmark was done.)
 
 ---
 
