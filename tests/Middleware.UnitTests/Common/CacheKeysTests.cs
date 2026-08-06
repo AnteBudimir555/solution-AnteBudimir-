@@ -1,3 +1,4 @@
+using System.Globalization;
 using Middleware.Core.Common;
 
 namespace Middleware.UnitTests.Common;
@@ -23,6 +24,31 @@ public class CacheKeysTests
     [InlineData("HOME-DECOR", "home-decor")]
     public void NormalizeTextTrimsAndLowercases(string input, string expected) =>
         Assert.Equal(expected, CacheKeys.NormalizeText(input));
+
+    [Theory]
+    [InlineData("tr-TR")]
+    [InlineData("az-Latn-AZ")]
+    [InlineData("lt-LT")]
+    [InlineData("en-US")]
+    public void NormalizeTextLowercasesInvariantlyWhateverTheHostLocale(string culture)
+    {
+        // The value normalized here is passed to IProductSource as well as into the key, so a
+        // culture-sensitive fold would change which upstream call is made on a Turkish-locale host:
+        // "ISTANBUL".ToLower() is "ıstanbul" under tr-TR. An en-US CI machine would never notice
+        // the difference, which is exactly why this test names the cultures.
+        var original = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo(culture);
+
+            Assert.Equal("istanbul", CacheKeys.NormalizeText("ISTANBUL"));
+            Assert.Equal("search|istanbul|0|20", CacheKeys.Search("ISTANBUL", 0, 20));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
+    }
 
     [Fact]
     public void SearchKeyIncludesNormalizedQueryAndPagination() =>

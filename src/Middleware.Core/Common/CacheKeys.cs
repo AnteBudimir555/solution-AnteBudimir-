@@ -9,7 +9,15 @@ namespace Middleware.Core.Common;
 /// </summary>
 public static class CacheKeys
 {
-    /// <summary>Normalizes a free-text param (query/category): trimmed and lower-cased; null/blank become "".</summary>
+    /// <summary>
+    /// Normalizes a free-text param (query/category): trimmed and lower-cased; null/blank become "".
+    /// <para><c>ToLowerInvariant</c> rather than <c>ToLower</c> is load-bearing, not stylistic: the
+    /// culture-sensitive overload maps <c>"ISTANBUL"</c> to <c>"ıstanbul"</c> under <c>tr-TR</c>, so the
+    /// same request would produce a different cache key — and a different upstream call — depending on
+    /// the host's locale. Because this value is passed to the source as well as into the key (see
+    /// <see cref="Abstractions.IProductSource"/>'s free-text convention), that would be a behaviour
+    /// change, not just a key change.</para>
+    /// </summary>
     public static string NormalizeText(string? value) =>
         value is null ? string.Empty : value.Trim().ToLowerInvariant();
 

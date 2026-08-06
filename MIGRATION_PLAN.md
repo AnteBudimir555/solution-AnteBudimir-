@@ -431,13 +431,13 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 > **Status: §6.1 and §6.2 are closed.** The cache cluster (B2, B3, S2, S5), the SDK pin (S4), the
 > .NET-only restructure that carried B4 with it, the seed-credential fix (B1), the upstream resilience
 > pipeline (S1), the caching coverage gap (S3), the 401 challenge detail (S6) and the CORS allowlist
-> (S7) have landed, and §6.3 has started with L1. Remaining: L2, the open half of L3, and L4.
+> (S7) have landed, and §6.3 has L1 and L2 closed. Remaining: the open half of L3, and L4.
 >
 > **Verified on SDK 10.0.302** — the version the pin records and the Phase 5 parity run used,
 > installed user-local to `~/.dotnet` after S4 landed. `dotnet build -c Release` is warning-free under
-> `TreatWarningsAsErrors`, and the suite is **179 passed, 0 failed, 0 skipped** (78 unit + 101
+> `TreatWarningsAsErrors`, and the suite is **183 passed, 0 failed, 0 skipped** (82 unit + 101
 > integration), up from the 139 baseline by the seven tests S1 adds, the six S3 adds, the five S6
-> adds, the sixteen S7 adds and the six L1 adds.
+> adds, the sixteen S7 adds, the six L1 adds and the four L2 adds.
 >
 > **The Phase 6 acceptance criteria below are stale for the cache cluster.** Three of them (bounded
 > cache memory, bounded distinct fetches, the T1 invariant) are still `[ ]` although B2/B3/S2/S5 closed
@@ -790,11 +790,43 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
   end), and a lone surrogate **already present in the input** being passed through. That last one
   fixes the contract deliberately: truncation never *introduces* a lone surrogate, but it does not
   repair malformed input, which would be a lossier promise than the one this method should make.
-- [ ] **L2 — Document the case-insensitivity contract.** `ProductQueryCache.cs:39,45` passes the
-  *normalized* (lower-cased, trimmed) query to `SearchByNameAsync`. That is what makes the cache key
-  and the upstream call provably consistent — good — but it silently imposes case-insensitive search
-  on every future source, and `IProductSource.SearchByNameAsync` does not say so. State it on the
-  interface.
+- [x] **L2 — Document the case-insensitivity contract.** *(Done — on two methods, not one, and with a
+  test the item did not ask for.)* `ProductQueryCache` passes the *normalized* (lower-cased, trimmed)
+  query to `SearchByNameAsync`. That is what makes the cache key and the upstream call provably
+  consistent — good — but it silently imposes case-insensitive search on every future source, and
+  `IProductSource` did not say so. Now stated as a **free-text convention** on the interface, with the
+  consequence spelled out rather than the mechanism: the caller's original casing is *gone* by the time
+  a source sees the value, so a case-sensitive source answers `iPhone` with the results for `iphone`
+  and no layer above can detect the substitution.
+
+  > **The item was under-scoped: the same imposition applies to `FindByCategoryAsync`.**
+  > `ProductQueryCache` normalizes the category at three call sites (`:64`, `:109`) and passes it
+  > down at `:73` and `:121`, exactly as it does the query — so a source matching categories
+  > case-sensitively fails the same way. Both methods now carry the constraint; documenting only
+  > `SearchByNameAsync` would have left half the contract unstated. *(The line numbers in the original
+  > item, `:39,45`, predate S3's `CategoriesAsync` addition.)*
+
+  > **`ToLowerInvariant` turned out to be load-bearing, and nothing was pinning it.** Probed across
+  > four locales: `"ISTANBUL".ToLower()` is **`"ıstanbul"`** under `tr-TR` and `az-Latn-AZ`, and
+  > `"istanbul"` under `en-US` and `lt-LT`. Because this value is passed to the source *as well as*
+  > into the key, swapping the overload would change **which upstream call is made** depending on the
+  > host's locale — not merely which key it is filed under. `NormalizeTextLowercasesInvariantlyWhateverTheHostLocale`
+  > now names the cultures explicitly. Verified by mutation, not by inspection: flipping the
+  > implementation to `ToLower()` fails 2 of its 4 cases with `Expected "istanbul" / Actual "ıstanbul"`,
+  > and passes the `en-US` case — which is precisely why a CI machine would never have raised it.
+
+  > **One precision the contract states rather than glosses:** invariant lower-casing is *not* full
+  > Unicode case folding, so it is not the `OrdinalIgnoreCase` relation. Measured: `Σ` and `ς` are
+  > equal under `OrdinalIgnoreCase` but normalize differently; `İ` (U+0130) does not lower to `i`, and
+  > `ß` does not fold to `ss`. A source writing its own comparer should therefore compare the value
+  > **ordinally, as given**, not re-fold it.
+
+  The behavioural half was already covered — `SearchInputsThatNormalizeToTheSameKeyShareOneUpstreamCall`
+  (integration) and `SearchNormalizesQueryAndTranslatesOffset` / `CategoryPageWithCategoryQueriesThatCategory`
+  (unit) pin that the normalized value is what reaches the source. Culture-invariance was the one part
+  of the contract with no test behind it. Also confirmed against the **live** DummyJSON that the one
+  real implementation honours the contract being stated: `q=phone|Phone|PHONE|pHoNe` all return
+  `total=23`.
 - [ ] **L3 — Clear the stale post-bump comments.** *(Half done, in S3.)*
   `ApiDocumentationExtensions.cs:15-19` still says *"On the net8.0 target … its document generator
   arrived in .NET 9"* — **still open**. ~~`CachingTests.cs:24-26` still says *"HybridCache on this
@@ -992,6 +1024,11 @@ Ordered by how quietly each one fails. **T1 is the only item here that can corru
   > body either, since the serializer escapes the lone surrogate as `\` + `uFFFD` — six ASCII
   > characters. The measurement that mattered was a deserialize, and that is the shape the
   > replacement test takes.
+  >
+  > The note's closing line — *"the same applies to L2 if the lower-casing is ever changed"* — was
+  > taken literally and is now discharged: `NormalizeTextLowercasesInvariantlyWhateverTheHostLocale`
+  > fails if the invariant fold is swapped for the culture-sensitive one, which was the one part of
+  > L2's contract nothing was holding.
 - **T9 — A "never seed outside Development" guard breaks the integration suite.**
   `MiddlewareApiFactory.cs:63` hosts the app as `Environments.Staging`, and `WithSeedUser(...)` turns
   the seeder on — so the obvious B1 hardening
