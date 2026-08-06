@@ -401,8 +401,8 @@ that run had a quieter machine — and no controlled net8-vs-net10 benchmark was
 
 ### Phase 6: Pre-Release Hardening — **OPEN**
 
-> **Status: in progress — the cache cluster (B2, B3, S2, S5) has landed.** Remaining: B1, B4, S1,
-> S3, S4, S6, S7 and §6.3.
+> **Status: in progress — the cache cluster (B2, B3, S2, S5) and the SDK pin (S4) have landed.**
+> Remaining: B1, B4, S1, S3, S6, S7 and §6.3.
 >
 > **Verification caveat, and it is a real one.** The workstation carries only SDK 8.0.300, so the
 > `net10.0` solution cannot be built or tested here (that is S4's whole point). The cache work was
@@ -518,9 +518,23 @@ that run had a quieter machine — and no controlled net8-vs-net10 benchmark was
     identical call. **T5: this moves the load-mode upstream-call counts.**
   - Leaving `GetByIdAsync` uncached is defensible for freshness — say so in a comment rather than
     leaving it looking like an oversight.
-- [ ] **S4 — Add `global.json`.** `Directory.Build.props:9` targets `net10.0`; a machine with SDK
-  8.0.300 fails all six projects with `NETSDK1045` and no indication of what is required. Pin the SDK
-  so the failure states its own fix. **T6 covers `rollForward` and placement.**
+- [x] **S4 — Add `global.json`.** *(Done.)* `Directory.Build.props` targets `net10.0`; a machine with
+  SDK 8.0.300 failed all six projects with `NETSDK1045` and no indication of what was required. The
+  pin is at the **repository root** (T6: a `global.json` in `dotnet/` is invisible to `dotnet test`
+  run from the root, which is where the harness is invoked; Maven ignores it). The failure now states
+  its own fix:
+
+  ```
+  Requested SDK version: 10.0.302
+  global.json file: C:\...\MiddlewareRestApi\global.json
+  Install the [10.0.302] .NET SDK or update [...\global.json] to match an installed SDK.
+  ```
+
+  > `rollForward` is **`latestMinor`**, not the `latestFeature` this plan first suggested. Both fix the
+  > default (`latestPatch`, which rejects a newer feature band), but the requirement here is "any .NET
+  > 10 SDK, newest installed", and `latestFeature` is pinned to major.minor `10.0` — it would reject a
+  > future 10.1 SDK for no reason. The version is a floor, kept at the 10.0.302 the parity run used, so
+  > the pin still records what was verified.
 - [x] **S5 — Enforce `MaxInMemoryCandidates` instead of narrating it.** *(Done.)* It logged a warning
   suggesting someone *"consider pushing the price filter down"*, then materialized and cached the full
   set anyway — a threshold that cannot stop anything is a log line, not a limit. It now logs at
@@ -658,15 +672,20 @@ Ordered by how quietly each one fails. **T1 is the only item here that can corru
   corpus expectations in the same commit and record it in the known-divergence list, or the next CI
   run blocks on a fix working as designed. Same applies to S6 (`--mode shadow`, 401 body) and L1
   (`--mode shadow`, truncated strings).
-- **T6 — `global.json` placement and `rollForward` both bite.** Default `rollForward` is
-  `latestPatch`, so pinning `"version": "10.0.302"` fails on a machine carrying 10.0.4xx — a pin
-  intended to *unblock* contributors instead blocks the ones who are more current. Use
-  `"rollForward": "latestFeature"`. Placement: a `global.json` in `dotnet/` is not seen by
-  `dotnet test` run from the repository root, and `Middleware.ShadowHarness` is invoked from there.
-  Put it at the repository root — it has no effect on the Maven build beside it.
+- **T6 — `global.json` placement and `rollForward` both bite.** *(Resolved in S4.)* Default
+  `rollForward` is `latestPatch`, so pinning `"version": "10.0.302"` fails on a machine carrying
+  10.0.4xx — a pin intended to *unblock* contributors instead blocks the ones who are more current.
+  Placement: a `global.json` in `dotnet/` is not seen by `dotnet test` run from the repository root,
+  and `Middleware.ShadowHarness` is invoked from there. It goes at the repository root, where it has
+  no effect on the Maven build beside it.
   ```json
-  { "sdk": { "version": "10.0.302", "rollForward": "latestFeature" } }
+  { "sdk": { "version": "10.0.302", "rollForward": "latestMinor" } }
   ```
+  `latestMinor` rather than the `latestFeature` first suggested here: `latestFeature` is pinned to
+  major.minor `10.0` and would reject a future 10.1 SDK, which is not the intent. Note also that the
+  *version is a floor* — a machine with only 10.0.100 is rejected too. That is deliberate (it records
+  the SDK the parity run used) but it is the one way this pin can still block someone, so lower the
+  floor rather than loosen `rollForward` if that ever comes up.
 - **T7 — Restricting CORS is the moment someone adds `AllowCredentials`.** `AllowAnyOrigin` and
   `AllowCredentials` are mutually exclusive, so the current config *cannot* express the dangerous
   combination. Switching to `WithOrigins` removes that guardrail, and `AllowCredentials` is the
