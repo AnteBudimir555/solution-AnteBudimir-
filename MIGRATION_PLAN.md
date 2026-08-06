@@ -404,15 +404,19 @@ that run had a quieter machine — and no controlled net8-vs-net10 benchmark was
 > **Status: in progress — the cache cluster (B2, B3, S2, S5) and the SDK pin (S4) have landed.**
 > Remaining: B1, B4, S1, S3, S6, S7 and §6.3.
 >
-> **Verification caveat, and it is a real one.** The workstation carries only SDK 8.0.300, so the
-> `net10.0` solution cannot be built or tested here (that is S4's whole point). The cache work was
-> verified by compiling `Middleware.Core` and the changed `Upstream` files against `net8.0` in
-> isolation — clean under `TreatWarningsAsErrors` — and by running the changed cache tests on that
-> target: **23 passed, 0 failed**, including the three new ones. The package under test
-> (`Caching.Hybrid` 10.8.0) is the same build; what has *not* been exercised is the full solution, the
-> integration suite (`AFullSizedPageIsRetainedUnderTheConfiguredSizeBound` in particular, which needs
-> the real host), and the parity harness. **Run all three on a .NET 10 SDK before this is considered
-> done.**
+> **Verified on SDK 10.0.302** — the version the pin records and the Phase 5 parity run used,
+> installed user-local to `~/.dotnet` after S4 landed. `dotnet build -c Release` is warning-free under
+> `TreatWarningsAsErrors`, and the suite is **136 passed, 0 failed, 0 skipped** (68 unit + 68
+> integration), up from the 133 baseline by exactly the three tests this work adds.
+>
+> `AFullSizedPageIsRetainedUnderTheConfiguredSizeBound` passes against the real host, which is the
+> point that matters for B3: the byte budget does retain a realistic 100-product page, so the unit
+> error described in T2 is closed by a test rather than by an argument.
+>
+> **Still not run: the parity harness.** `--mode shadow` and `--mode load` need both services up
+> against live DummyJSON. Load mode is expected to *fail* on B2 — see T5 — because .NET now makes
+> fewer upstream calls than Java. That expectation must be updated in the same commit that runs it,
+> not relaxed to make it pass.
 >
 > Two traps were settled empirically rather than by reasoning, and one of them was recorded wrongly in
 > this document — see T1, T2 and T4, all corrected in place with the measurements.
