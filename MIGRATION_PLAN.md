@@ -431,13 +431,13 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 > **Status: §6.1 and §6.2 are closed.** The cache cluster (B2, B3, S2, S5), the SDK pin (S4), the
 > .NET-only restructure that carried B4 with it, the seed-credential fix (B1), the upstream resilience
 > pipeline (S1), the caching coverage gap (S3), the 401 challenge detail (S6) and the CORS allowlist
-> (S7) have landed. Remaining: §6.3 only — L1, L2, the open half of L3, and L4.
+> (S7) have landed, and §6.3 has started with L1. Remaining: L2, the open half of L3, and L4.
 >
 > **Verified on SDK 10.0.302** — the version the pin records and the Phase 5 parity run used,
 > installed user-local to `~/.dotnet` after S4 landed. `dotnet build -c Release` is warning-free under
-> `TreatWarningsAsErrors`, and the suite is **173 passed, 0 failed, 0 skipped** (72 unit + 101
-> integration), up from the 139 baseline by the seven tests S1 adds, the six S3 adds, the five S6 adds
-> and the sixteen S7 adds.
+> `TreatWarningsAsErrors`, and the suite is **179 passed, 0 failed, 0 skipped** (78 unit + 101
+> integration), up from the 139 baseline by the seven tests S1 adds, the six S3 adds, the five S6
+> adds, the sixteen S7 adds and the six L1 adds.
 >
 > **The Phase 6 acceptance criteria below are stale for the cache cluster.** Three of them (bounded
 > cache memory, bounded distinct fetches, the T1 invariant) are still `[ ]` although B2/B3/S2/S5 closed
@@ -749,10 +749,47 @@ Verified after the move: `dotnet build -c Release` warning-free, **136 passed / 
 
 #### 6.3 Lower priority
 
-- [ ] **L1 — Surrogate-pair split in `TextUtils.Truncate:33`.** `text.Substring(0, budget)` cuts at a
-  UTF-16 index; an emoji straddling index 99 yields a lone surrogate, which `System.Text.Json` emits
-  as `U+FFFD`. **[inherited]** — Java's `substring` splits identically, so this is a *parity-breaking
-  correctness fix*. See T8.
+- [x] **L1 — Surrogate-pair split in `TextUtils.Truncate:33`.** *(Done — as proposed, with the
+  symptom corrected.)* `text.Substring(0, budget)` cut at a UTF-16 index; an emoji straddling index 99
+  yielded a lone surrogate. **[inherited]** — Java's `substring` splits identically, so this is a
+  *parity-breaking correctness fix*. See T8.
+
+  Fixed by stepping the window back one unit when — and only when — the cut would land between a
+  high and a low surrogate, so a straddling character is dropped whole. The word-boundary threshold
+  still divides the original `budget`, so **no input that does not straddle a pair changes at all**;
+  the cost is one character of an already-truncated description, on the hard-cut path only. A
+  boundary cut lands on a space, which is never half of a pair, so that path was never at risk —
+  measured, not assumed.
+
+  > **The plan said `System.Text.Json` "emits `U+FFFD`", and that is half the story.** Probed on
+  > .NET 10 against a verbatim copy of the old method: the serializer does not emit a raw replacement
+  > character, it writes the six-character **escape** (backslash, `u`, `FFFD`) into the JSON text.
+  > So the defect is invisible to any test that greps the response body for `U+FFFD` — the bytes on
+  > the wire are ASCII. It only
+  > materializes when a client *deserializes*, which is why the regression test round-trips through
+  > `JsonSerializer` rather than asserting on the serialized string. Nor does the serializer throw,
+  > and `TrimEnd()` does not strip an orphaned surrogate: there is no point at which this failed
+  > loudly.
+  >
+  > | input (`maxLength = 10`) | old result | new result |
+  > |---|---|---|
+  > | `abcdefgh😀ijklmnop` | `abcdefgh` + lone `D83D` + `…` → client reads `abcdefgh�…` | `abcdefgh…` |
+  > | `abcdefg😀hijklmno` (pair fits) | `abcdefg😀…` | unchanged |
+  > | `hello wo😀rld and more` (boundary path) | `hello…` | unchanged |
+
+  > **Scope deliberately stopped at surrogate pairs, and the wider problem is real.** The same probe
+  > split a `👨‍👩‍👧` ZWJ sequence and an `e`+combining-acute cluster. Both produce **well-formed
+  > UTF-16** and survive JSON round-trip intact — they render as a different but valid string, not as
+  > a replacement character. Truncating on grapheme clusters (`StringInfo`) would fix those too, but
+  > it is a behaviour change on ordinary text with no correctness failure behind it, so it is not
+  > folded in here.
+
+  Six tests added to `TextUtilsTests`: the straddling drop, a pair that fits being kept (so the guard
+  cannot over-trim), the JSON round-trip, the word-boundary path being unperturbed, `maxLength = 2`
+  (where the budget is one unit and the result is the ellipsis alone — the index arithmetic's low
+  end), and a lone surrogate **already present in the input** being passed through. That last one
+  fixes the contract deliberately: truncation never *introduces* a lone surrogate, but it does not
+  repair malformed input, which would be a lossier promise than the one this method should make.
 - [ ] **L2 — Document the case-insensitivity contract.** `ProductQueryCache.cs:39,45` passes the
   *normalized* (lower-cased, trimmed) query to `SearchByNameAsync`. That is what makes the cache key
   and the upstream call provably consistent — good — but it silently imposes case-insensitive search
@@ -940,6 +977,21 @@ Ordered by how quietly each one fails. **T1 is the only item here that can corru
   not the more.** L1 is now an ordinary bug fix with nothing arguing against it, which also means
   nothing would have caught it had it been a regression instead. Fix it on its merits and add a unit
   test for the surrogate boundary; the same applies to L2 if the lower-casing is ever changed.
+
+  > **Resolution (L1, done): the trap did not fire, because the thing that would have fired it no
+  > longer exists.** Nothing weighed parity against correctness — there was no harness number to keep
+  > quiet, so the fix was settled on its merits in one step. What the item confirms is the *second*
+  > half of the note, which is the part that outlives it: **the divergence is now unguarded in both
+  > directions.** Java truncates `abcdefgh😀…` to a mangled string and .NET no longer does; nothing
+  > in the repository records that difference except this document and the tests added with the fix.
+  > Had the surrogate split been introduced by a later refactor rather than inherited, no test would
+  > have failed — the probe, not the suite, is what caught it, and the probe was written because this
+  > note said to look.
+  >
+  > A concrete instance of the gap: the defect could not have been caught by inspecting a response
+  > body either, since the serializer escapes the lone surrogate as `\` + `uFFFD` — six ASCII
+  > characters. The measurement that mattered was a deserialize, and that is the shape the
+  > replacement test takes.
 - **T9 — A "never seed outside Development" guard breaks the integration suite.**
   `MiddlewareApiFactory.cs:63` hosts the app as `Environments.Staging`, and `WithSeedUser(...)` turns
   the seeder on — so the obvious B1 hardening
