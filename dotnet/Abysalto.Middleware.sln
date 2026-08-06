@@ -17,6 +17,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Middleware.UnitTests", "tes
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Middleware.IntegrationTests", "tests\Middleware.IntegrationTests\Middleware.IntegrationTests.csproj", "{FED606AF-B011-42DD-A468-A50E99477211}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{CF3ADAD3-F919-4DD5-A8C2-CE7F390F2ABA}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Middleware.ShadowHarness", "tools\Middleware.ShadowHarness\Middleware.ShadowHarness.csproj", "{F3FD5C67-010C-4ECA-AEE1-A65CF2DBB55B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -46,6 +50,10 @@ Global
 		{FED606AF-B011-42DD-A468-A50E99477211}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{FED606AF-B011-42DD-A468-A50E99477211}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{FED606AF-B011-42DD-A468-A50E99477211}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F3FD5C67-010C-4ECA-AEE1-A65CF2DBB55B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F3FD5C67-010C-4ECA-AEE1-A65CF2DBB55B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F3FD5C67-010C-4ECA-AEE1-A65CF2DBB55B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F3FD5C67-010C-4ECA-AEE1-A65CF2DBB55B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{E61E8903-83A4-4F92-8B24-E5ED112E963F} = {B507718E-302D-4CC1-8410-BC8C83860464}
@@ -53,5 +61,6 @@ Global
 		{DF65E34F-21EB-4AA4-A7C3-86DA9B371F11} = {B507718E-302D-4CC1-8410-BC8C83860464}
 		{958BF5BB-A649-4E47-BD5C-C0F8D077F9AA} = {B3333AE3-E285-47B2-9D48-041B9F28489D}
 		{FED606AF-B011-42DD-A468-A50E99477211} = {B3333AE3-E285-47B2-9D48-041B9F28489D}
+		{F3FD5C67-010C-4ECA-AEE1-A65CF2DBB55B} = {CF3ADAD3-F919-4DD5-A8C2-CE7F390F2ABA}
 	EndGlobalSection
 EndGlobal

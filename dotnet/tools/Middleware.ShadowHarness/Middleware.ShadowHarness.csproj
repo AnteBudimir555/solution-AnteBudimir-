@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Middleware.ShadowHarness</RootNamespace>
+    <!-- A diagnostic tool, not shipped with the service: excluded from the packaged output. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Mints the deliberately-expired token in the auth corpus; both services must reject it. -->
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="7.1.2" />
+  </ItemGroup>
+
+</Project>
