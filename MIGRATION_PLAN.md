@@ -160,7 +160,7 @@ Dependency direction: `Api → Infrastructure → Core`; `Core` depends on nothi
 **Acceptance Criteria**
 - [x] `dotnet build` succeeds warning-free under `TreatWarningsAsErrors`.
 - [x] Ported `TextUtilsTest` and `CacheKeysTest` cases pass.
-- [ ] Startup fails fast when the JWT secret is missing/too short. *(Deferred to Phase 4 — requires the Api host/DI.)*
+- [x] Startup fails fast when the JWT secret is missing/too short. *(Done in Phase 4: `AddSecurityServices` binds `JwtOptions` with `ValidateOnStart`; verified by `StartupFailsFastWhenTheJwtSecretIsMissingOrTooShort`.)*
 - [x] `PagedResponse.Of` matches Java `totalPages` across a `(total, size)` table including `size = 0`.
 
 > **Status (Phase 2): code-complete.** EF Core 8 persistence layer implemented; the
@@ -179,7 +179,7 @@ Dependency direction: `Api → Infrastructure → Core`; `Core` depends on nothi
 - [x] Register the provider by environment: `UseSqlite` (Development) / `UseNpgsql` (Postgres) from configuration (`AddPersistence`).
 - [x] Enforce no-default prod credentials (fail fast under the Postgres provider — throws when `ConnectionStrings:Default` is absent).
 - [x] Create the initial EF migration (`InitialCreate`) via the `dotnet-ef` local tool + a design-time context factory (Npgsql).
-- [x] Apply migrations on startup via `InitializeDatabaseAsync` (Migrate for Npgsql / EnsureCreated for SQLite). *(Host invocation → Phase 4.)*
+- [x] Apply migrations on startup via `InitializeDatabaseAsync` (Migrate for Npgsql / EnsureCreated for SQLite). *(Phase 4 hosts it as `DatabaseInitializer`, registered by `AddPersistence` so it always starts before the user seeder.)*
 - [x] Implement `IUserRepository`: `FindByUsernameAsync`, `ExistsByUsernameAsync`, `AddAsync`.
 
 **Acceptance Criteria**
@@ -198,7 +198,7 @@ Dependency direction: `Api → Infrastructure → Core`; `Core` depends on nothi
 - [x] Port `ProductQueryCache` on **HybridCache**: one entry per normalized key via `GetOrCreateAsync`; candidate set keyed by category + price **independent of page**. `IProductQueryCache` extracted so the service is unit-testable in isolation.
 - [x] Preserve the `max-in-memory-candidates` bound and the over-threshold warning log.
 - [x] Register all services in the DI container (`AddApplicationServices` in `Core`, `AddUpstreamSource` in `Infrastructure`). *(Host `UseSerilog`/pipeline invocation → Phase 4.)*
-- [ ] Wire Serilog (logging), the ProblemDetails handler (error handling), and shared utilities. *(Deferred to Phase 4 — these are Api-host/pipeline concerns; the services and exceptions they surface are complete.)*
+- [x] Wire Serilog (logging), the ProblemDetails handler (error handling), and shared utilities. *(Done in Phase 4, where the Api host and its middleware pipeline are wired.)*
 
 > **Status — Phase 3 complete (core services & upstream adapter).** The application layer is
 > implemented and unit/component-tested against source-parity fixtures. `DummyJsonProductSource` is a
@@ -215,26 +215,56 @@ Dependency direction: `Api → Infrastructure → Core`; `Core` depends on nothi
 - [x] Price-filter boundaries are inclusive and exact (`decimal`), verified at `minPrice`/`maxPrice`.
 
 ### Phase 4: API Endpoints, Auth & Middleware
-- [ ] Map the six endpoints in route groups (`/api/products` list/`{id}`/`filter`/`search`/`categories`, `/api/auth/login`).
-- [ ] Add FluentValidation rules: `page ∈ [0,10000]`, `size ∈ [1,100]`, free-text ≤ 100, `q` not blank, `id > 0`, cross-field `minPrice ≤ maxPrice` (→ `InvalidRequestException`).
-- [ ] Implement `JwtService` (issue/validate HS256): subject = username, issuer set + enforced, `expiresInSeconds` on the response; silent rejection of malformed/expired/wrong-issuer tokens.
-- [ ] Configure `JwtBearer`: `ClockSkew = TimeSpan.Zero`, `MapInboundClaims = false`, `ValidateIssuer = true`, `ValidateAudience = false`, symmetric HS256 key from config.
-- [ ] Implement `AuthEndpoints.Login`: BCrypt verify (`BCrypt.Net-Next`), issue token, log identity only (never password/token).
-- [ ] Implement `UserSeeder` as `IHostedService` (seed only when enabled and absent; store BCrypt hash only).
-- [ ] Configure authorization: public = auth + OpenAPI paths; everything else requires a valid bearer token.
-- [ ] Implement `ProblemDetailsExceptionHandler` (`IExceptionHandler` + `AddProblemDetails`): `type` URIs, `title`, `status`, `detail`, `timestamp`, field-level validation joins.
-- [ ] Wire `JwtBearerEvents.OnChallenge`/`OnForbidden` so 401/403 render the **same** ProblemDetail.
-- [ ] Implement `CorrelationIdMiddleware`: read/echo `X-Correlation-Id`, reuse inbound only if matching `[A-Za-z0-9._-]{1,64}`, push to Serilog `LogContext`, emit one completion line (method/path/status/duration), clear context afterward.
-- [ ] Configure Serilog sinks: compact JSON (Postgres) + readable console (Development); never log the Authorization header or login payload.
-- [ ] Configure CORS policy (explicit, even if permissive-for-dev) and request/response validation wiring.
-- [ ] Add the OpenAPI document + Scalar UI; mark `/api/auth/login` as public (no lock).
+- [x] Map the six endpoints in route groups (`/api/products` list/`{id}`/`filter`/`search`/`categories`, `/api/auth/login`).
+- [x] Add FluentValidation rules: `page ∈ [0,10000]`, `size ∈ [1,100]`, free-text ≤ 100, `q` not blank, `id > 0`, cross-field `minPrice ≤ maxPrice` (→ `InvalidRequestException`).
+- [x] Implement `JwtService` (issue/validate HS256): subject = username, issuer set + enforced, `expiresInSeconds` on the response; silent rejection of malformed/expired/wrong-issuer tokens.
+- [x] Configure `JwtBearer`: `ClockSkew = TimeSpan.Zero`, `MapInboundClaims = false`, `ValidateIssuer = true`, `ValidateAudience = false`, symmetric HS256 key from config.
+- [x] Implement `AuthEndpoints.Login`: BCrypt verify (`BCrypt.Net-Next`), issue token, log identity only (never password/token).
+- [x] Implement `UserSeeder` as `IHostedService` (seed only when enabled and absent; store BCrypt hash only).
+- [x] Configure authorization: public = auth + OpenAPI paths; everything else requires a valid bearer token.
+- [x] Implement `ProblemDetailsExceptionHandler` (`IExceptionHandler` + `AddProblemDetails`): `type` URIs, `title`, `status`, `detail`, `timestamp`, field-level validation joins.
+- [x] Wire `JwtBearerEvents.OnChallenge`/`OnForbidden` so 401/403 render the **same** ProblemDetail.
+- [x] Implement `CorrelationIdMiddleware`: read/echo `X-Correlation-Id`, reuse inbound only if matching `[A-Za-z0-9._-]{1,64}`, push to Serilog `LogContext`, emit one completion line (method/path/status/duration), clear context afterward.
+- [x] Configure Serilog sinks: compact JSON (Postgres) + readable console (Development); never log the Authorization header or login payload.
+- [x] Configure CORS policy (explicit, even if permissive-for-dev) and request/response validation wiring.
+- [x] Add the OpenAPI document + UI; mark `/api/auth/login` as public (no lock). *(Swashbuckle rather than Scalar — see the status note.)*
+- [x] Invoke `InitializeDatabaseAsync` from the host (deferred from Phase 2) and wire options `ValidateOnStart()` + the JWT fail-fast (deferred from Phase 1).
+
+> **Status — Phase 4 complete (API, auth, middleware).** Full suite: **120 passed, 0 skipped**
+> (66 unit + 54 integration); `dotnet build -c Release` is warning-free under
+> `TreatWarningsAsErrors`. The Testcontainers-Postgres migration test that Phases 2–3 reported
+> as skipped now runs for real — Docker is available on this machine.
+>
+> Notes on the three places the .NET stack forced a decision:
+> * **OpenAPI UI.** On the sanctioned `net8.0` fallback, `Microsoft.AspNetCore.OpenApi` only
+>   contributes endpoint metadata; its document generator arrived in .NET 9. Swashbuckle therefore
+>   generates both the document (`/swagger/v1/swagger.json`) and the UI (`/swagger`) in place of
+>   Scalar. This is exactly the "OpenAPI notes" §2.1 flags for the .NET 8 target, and it is a
+>   package swap, not a contract change: `OpenApiDocumentTests` pins the six paths, the single
+>   `bearerAuth` scheme, per-operation security (login carries no lock), the shared 400/401/500 +
+>   502/404 ProblemDetail responses, and the real parameter types.
+> * **Parameter binding.** Endpoint parameters bind as `string?` and convert in `QueryParsing`.
+>   Minimal-API binding failures produce an empty-bodied 400, whereas Spring reports a
+>   `MethodArgumentTypeMismatchException` as a ProblemDetail naming the parameter; converting
+>   explicitly keeps that contract. An operation filter restores the real types in the document.
+> * **Unmatched paths.** An unknown path answers **404** (with the API's problem body), where the
+>   Java service answers 401 because its security filter chain runs ahead of route resolution.
+>   Reproducing that needs a catch-all route, which makes every method mismatch on a known path a
+>   404 instead of a 405. Standard HTTP semantics won; this is the only intentional status
+>   divergence in the phase.
+>
+> `ProblemBody` is serialized instead of ASP.NET Core's `ProblemDetails` so the member order, the
+> custom `timestamp`, and the *absence* of framework extensions (`traceId`, `errors`) match Spring's
+> `ProblemDetail` byte for byte. 403 is wired through `JwtBearerEvents.OnForbidden` and renders the
+> same body, but no endpoint requires a role today, so — as in the Java service — nothing can
+> currently produce one.
 
 **Acceptance Criteria**
-- [ ] All endpoints enforce validation with the same status/message shape as the Java service.
-- [ ] A seeded user authenticates; token `sub`/`iss`/`exp` match the Java claims; tampered/expired/wrong-issuer tokens are rejected.
-- [ ] 400 / 401 / 403 / 404 / 502 / 500 all produce byte-comparable ProblemDetail bodies.
-- [ ] Every log line carries the correlation id; the response echoes `X-Correlation-Id`; no credential material is logged.
-- [ ] `/openapi` (or `/swagger`) renders; `/api/auth/login` shows no auth requirement.
+- [x] All endpoints enforce validation with the same status/message shape as the Java service. *(Hibernate-Validator messages restated verbatim; join shape asserted per parameter and per body in `ProblemContractTests`.)*
+- [x] A seeded user authenticates; token `sub`/`iss`/`exp` match the Java claims; tampered/expired/wrong-issuer tokens are rejected. *(`SeededUserCanAuthenticateAgainstTheFreshlyCreatedSchema`, `JwtServiceTests` incl. the exact claim-set assertion.)*
+- [x] 400 / 401 / 404 / 502 / 500 all produce byte-comparable ProblemDetail bodies. *(`ProblemContractTests` asserts the member set, `type`, `status` and `detail` for each. 403 shares the renderer but has no reachable trigger — see the status note.)*
+- [x] Every log line carries the correlation id; the response echoes `X-Correlation-Id`; no credential material is logged. *(`CorrelationIdTests`.)*
+- [x] `/swagger` renders; `/api/auth/login` shows no auth requirement. *(`OpenApiDocumentTests`.)*
 
 ### Phase 5: Testing & Feature Parity Verification
 - [ ] Implement automated unit tests — full xUnit ports of every existing unit test (services, mapper, cache, JWT, `TextUtils`, `CacheKeys`, `PagedResponse`).
