@@ -7,8 +7,20 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.5" />
-    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.4.0" />
+    <!--
+      OpenAPI: on net8.0 Microsoft.AspNetCore.OpenApi only contributes endpoint metadata — the
+      document generator (Microsoft.AspNetCore.OpenApi's AddOpenApi) arrived in .NET 9. Swashbuckle
+      therefore provides both the document and the UI here; this is one of the "OpenAPI notes" the
+      migration plan flags for the .NET 8 fallback target.
+    -->
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.11" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
+    <!-- Bearer authentication middleware (replaces the custom Spring Security JWT filter). -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.11" />
+    <!-- Request validation with explicit, Hibernate-Validator-compatible messages. -->
+    <PackageReference Include="FluentValidation" Version="11.11.0" />
+    <!-- Structured logging: LogContext = SLF4J MDC; compact JSON = the logstash encoder. -->
+    <PackageReference Include="Serilog.AspNetCore" Version="8.0.3" />
   </ItemGroup>
 
   <ItemGroup>
